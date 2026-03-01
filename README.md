@@ -31,13 +31,23 @@ controlling terminal. You can detach from it, disconnect, and re-attach later
 from the same or a different terminal, and the program keeps running
 undisturbed.
 
+**Session history survives everything.** Every byte written to the terminal
+is appended to a persistent log file on disk. When you re-attach — whether
+the session is still running, crashed, or you have rebooted the machine — the
+full output history is replayed to your terminal first, so you can see exactly
+what happened and pick up right where you left off. No plugins, no
+configuration, no manual `script` wrappers. Other session managers keep
+history only in memory: when the process dies or the machine reboots, the
+output is gone. With `atch` it is on disk until you clear it.
+
 ## Features
 
 - Attach and detach from running programs
 - Multiple clients can attach to the same session simultaneously
 - **No terminal emulation** — raw output stream is passed through unchanged
-- Sessions persist across disconnects
-- Scrollback replay on re-attach — see prior output when you reconnect
+- Sessions persist across disconnects, crashes, and reboots
+- **Full session history on disk** — every line ever written is saved and replayed on re-attach
+- **History survives process exit** — re-opening a session shows the complete prior output before starting fresh
 - Push stdin directly to a running session
 - List all sessions with liveness status
 - Prevents accidental recursive self-attach
@@ -184,21 +194,62 @@ allowed. `ATCH_SESSION` is set only in the child process of each master, so
 the outer session's shell always retains its own value — the self-attach
 protection works correctly at all nesting levels.
 
-## Scrollback
+## Session history
 
-When re-attaching to a session, `atch` replays the last 128 KB of output so
-you can see what happened while you were away. No configuration needed — it
-works automatically.
+`atch` keeps two complementary history stores, both replayed automatically
+whenever you attach — no configuration required.
 
-The scrollback buffer is in-memory in the master process. It is lost only if
-the master exits (which ends the session anyway). To adjust the buffer size,
-build with:
+### On-disk log (persistent)
+
+Every byte written to the pty is appended to a log file on disk
+(`~/.cache/atch/<session>.log`). The log persists across everything:
+
+- **Detach / re-attach** — re-attaching to a running session replays the
+  complete history before the live stream begins.
+- **Session exit** — once the program exits, the full output remains on disk.
+  Running `atch mysession` again starts a fresh session but first shows
+  everything from the previous one, so you know exactly what it did.
+- **Machine reboot** — the log file survives a reboot. The next time you
+  open the session you see the complete prior output before the new shell
+  starts.
+- **Crash recovery** — if the session process is killed unexpectedly, the
+  log is intact. Nothing is lost.
+
+This is fundamentally different from `tmux`, `screen`, and `dtach`: they hold
+history only in memory. When the process exits or the machine restarts, the
+output is gone. With `atch` the raw byte stream is on disk until you
+explicitly clear it with `atch clear <session>`.
+
+The log is capped at 1 MB by default; once it exceeds that, only the most
+recent 1 MB is kept. To change the cap, build with:
+
+```sh
+make CFLAGS="-DLOG_MAX_SIZE=$((4*1024*1024))"
+```
+
+### In-memory ring buffer (fast replay)
+
+While the session is running, `atch` also maintains a 128 KB ring buffer in
+the master process. When a new client attaches to a running session that has
+no on-disk log to replay, the ring is used to deliver the most recent output
+instantly, without a disk read. The ring is lost when the master exits, but
+the on-disk log covers that case.
+
+To adjust the ring size, build with:
 
 ```sh
 make CFLAGS="-DSCROLLBACK_SIZE=$((256*1024))"
 ```
 
 The value must be a power of two.
+
+### Clearing history
+
+To wipe the on-disk log and start clean on the next attach:
+
+```sh
+atch clear mysession
+```
 
 ## Backward compatibility
 

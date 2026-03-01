@@ -25,7 +25,7 @@ atch.1: atch.1.md
 man: atch.1
 
 clean:
-	rm -f atch $(OBJ) *.1{,.md} *.c~
+	rm -f atch $(OBJ) *.1.md *.c~
 
 .PHONY: fmt
 fmt:
@@ -50,8 +50,7 @@ alpine-build-docker: build-image
 		--platform linux/$(arch) $(IMAGE):$(arch) ./build.sh
 
 .PHONY: release
-release: atch.1 $(archs)
-	$(MAKE) clean
+release: man $(archs)
 
 $(archs):
 	mkdir -p release

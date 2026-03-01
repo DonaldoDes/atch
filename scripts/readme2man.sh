@@ -5,16 +5,17 @@
 # Then:  pandoc --standalone -t man atch.1.md -o atch.1
 #
 # Section mapping:
-#   # atch             -> NAME description + DESCRIPTION body
-#   ## Features        -> DESCRIPTION subsection
-#   ## Building        -> dropped
-#   ## Usage           -> SYNOPSIS
-#   ## Modes           -> MODES
-#   ## Options         -> OPTIONS
-#   ## Examples        -> EXAMPLES
-#   ## Session storage -> DESCRIPTION subsection
-#   ## Scrollback      -> DESCRIPTION subsection
-#   ## License         -> dropped; SEE ALSO note added
+#   # atch                    -> NAME description + DESCRIPTION body
+#   ## Features               -> DESCRIPTION subsection
+#   ## Building               -> dropped
+#   ## Usage                  -> SYNOPSIS
+#   ## Commands               -> COMMANDS
+#   ## Options                -> OPTIONS
+#   ## Examples               -> EXAMPLES
+#   ## Session storage        -> DESCRIPTION subsection
+#   ## Session history        -> DESCRIPTION subsection
+#   ## Backward compatibility -> COMPATIBILITY
+#   ## License                -> dropped; SEE ALSO note added
 
 set -euo pipefail
 
@@ -79,13 +80,13 @@ echo
 intro
 echo
 h2_section "Features"
-h2_section "Scrollback"
+h2_section "Session history"
 h2_section "Session storage"
 
-# ── MODES ─────────────────────────────────────────────────────────────────────
-echo "# MODES"
+# ── COMMANDS ──────────────────────────────────────────────────────────────────
+echo "# COMMANDS"
 echo
-h2 "Modes"
+h2 "Commands"
 echo
 
 # ── OPTIONS ───────────────────────────────────────────────────────────────────
@@ -131,10 +132,17 @@ cat <<'EOF'
 :   Fallback socket directory when **$HOME** is unset.
 
 _SOCKET_**.log**
-:   Session output log written alongside each socket.
-    Replayed automatically when re-attaching to a dead session.
+:   Persistent session output log written alongside each socket.
+    Replayed automatically on re-attach — whether the session is still
+    running, has exited, crashed, or the machine has been rebooted.
 
 EOF
+
+# ── COMPATIBILITY ─────────────────────────────────────────────────────────────
+echo "# COMPATIBILITY"
+echo
+h2 "Backward compatibility"
+echo
 
 # ── SEE ALSO ──────────────────────────────────────────────────────────────────
 cat <<'EOF'
