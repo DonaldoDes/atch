@@ -122,9 +122,7 @@ struct packet
 
 /* Computed at startup from progname so the binary can be renamed freely. */
 extern const char *session_envvar;
-extern const char *session_chain_envvar;
-#define SESSION_ENVVAR       session_envvar
-#define SESSION_CHAIN_ENVVAR session_chain_envvar
+#define SESSION_ENVVAR session_envvar
 
 void write_buf_or_fail(int fd, const void *buf, size_t count);
 void write_packet_or_fail(int fd, const struct packet *pkt);
@@ -137,7 +135,7 @@ int attach_main(int noerror);
 int master_main(char **argv, int waitattach, int dontfork);
 int push_main(void);
 int list_main(void);
-int kill_main(void);
+int kill_main(int force);
 
 char const * clear_csi_data(void);
 

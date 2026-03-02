@@ -264,10 +264,11 @@ int attach_main(int noerror)
 	int s;
 
 	/* Refuse to attach to any session in our ancestry chain (catches both
-	 * direct self-attach and indirect loops like A -> B -> A). */
+	 * direct self-attach and indirect loops like A -> B -> A).
+	 * SESSION_ENVVAR is the colon-separated chain, so scanning it covers
+	 * all ancestors. */
 	{
-		const char *chain = getenv(SESSION_CHAIN_ENVVAR);
-		const char *tosearch = chain ? chain : getenv(SESSION_ENVVAR);
+		const char *tosearch = getenv(SESSION_ENVVAR);
 
 		if (tosearch && *tosearch) {
 			size_t slen = strlen(sockname);
@@ -531,12 +532,39 @@ static int session_gone(void)
 	return stat(sockname, &st) < 0 && errno == ENOENT;
 }
 
-int kill_main(void)
+int kill_main(int force)
 {
 	const char *name = session_shortname();
 	int i;
 
 	signal(SIGPIPE, SIG_IGN);
+
+	if (force) {
+		/* Skip the grace period — send SIGKILL immediately. */
+		if (send_kill(SIGKILL) < 0) {
+			if (errno == ENOENT)
+				printf("%s: session '%s' does not exist\n",
+				       progname, name);
+			else if (errno == ECONNREFUSED)
+				printf("%s: session '%s' is not running\n",
+				       progname, name);
+			else
+				printf("%s: %s: %s\n", progname, sockname,
+				       strerror(errno));
+			return 1;
+		}
+		for (i = 0; i < 20; i++) {
+			usleep(100000);
+			if (session_gone()) {
+				if (!quiet)
+					printf("%s: session '%s' killed\n",
+					       progname, name);
+				return 0;
+			}
+		}
+		printf("%s: session '%s' did not stop\n", progname, name);
+		return 1;
+	}
 
 	if (send_kill(SIGTERM) < 0) {
 		if (errno == ENOENT)

@@ -225,6 +225,28 @@ assert_exit     "kill: extra arg → exit 1"           1 "$rc"
 assert_contains "kill: extra arg → message"          "Invalid number of arguments" "$out"
 tidy s-killextra
 
+# kill -f / --force (skip SIGTERM grace period, send SIGKILL directly)
+"$ATCH" start s-killf sleep 999
+run "$ATCH" kill -f s-killf
+assert_exit     "kill -f: exits 0"                   0 "$rc"
+assert_contains "kill -f: prints killed"             "killed" "$out"
+
+"$ATCH" start s-killf2 sleep 999
+run "$ATCH" kill --force s-killf2
+assert_exit     "kill --force: exits 0"              0 "$rc"
+assert_contains "kill --force: prints killed"        "killed" "$out"
+
+# -f after session name
+"$ATCH" start s-killf3 sleep 999
+run "$ATCH" kill s-killf3 -f
+assert_exit     "kill -f (after session): exits 0"   0 "$rc"
+assert_contains "kill -f (after session): killed"    "killed" "$out"
+
+# -f on nonexistent session still reports the error
+run "$ATCH" kill -f s-noexist-force
+assert_exit     "kill -f: nonexistent → exit 1"      1 "$rc"
+assert_contains "kill -f: nonexistent → message"     "does not exist" "$out"
+
 # ── 6. clear command ─────────────────────────────────────────────────────────
 
 run "$ATCH" clear
@@ -263,32 +285,24 @@ run "$ATCH" current
 assert_exit "current: outside session → exit 1"      1 "$rc"
 assert_eq   "current: outside session → no output"   "" "$out"
 
-# SESSION var alone (no chain var) — fallback path
+# ATCH_SESSION holds the chain; a single session has no colon
 run env ATCH_SESSION="$HOME/.cache/atch/mywork" "$ATCH" current
-assert_exit     "current: SESSION var alone → exit 0"      0 "$rc"
-assert_eq       "current: SESSION var alone → basename"    "mywork" "$out"
+assert_exit     "current: single session → exit 0"         0 "$rc"
+assert_eq       "current: single session → basename"       "mywork" "$out"
 
-# deep path fallback
+# deep path
 run env ATCH_SESSION="/tmp/deep/path/proj" "$ATCH" current
 assert_exit     "current: deep path → exit 0"        0 "$rc"
 assert_eq       "current: deep path basename"        "proj" "$out"
 
-# single session with chain var (not nested, chain = SESSION)
-run env ATCH_SESSION="$HOME/.cache/atch/solo" \
-        ATCH_SESSIONS="$HOME/.cache/atch/solo" "$ATCH" current
-assert_exit     "current: single chain → exit 0"     0 "$rc"
-assert_eq       "current: single chain → name"       "solo" "$out"
-
-# two levels of nesting
-run env ATCH_SESSION="$HOME/.cache/atch/inner" \
-        ATCH_SESSIONS="$HOME/.cache/atch/outer:$HOME/.cache/atch/inner" \
+# two levels of nesting: ATCH_SESSION = outer:inner
+run env ATCH_SESSION="$HOME/.cache/atch/outer:$HOME/.cache/atch/inner" \
         "$ATCH" current
 assert_exit     "current: nested 2 levels → exit 0"  0 "$rc"
 assert_eq       "current: nested 2 levels → chain"   "outer > inner" "$out"
 
 # three levels of nesting
-run env ATCH_SESSION="/s/c" \
-        ATCH_SESSIONS="/s/a:/s/b:/s/c" "$ATCH" current
+run env ATCH_SESSION="/s/a:/s/b:/s/c" "$ATCH" current
 assert_exit     "current: nested 3 levels → exit 0"  0 "$rc"
 assert_eq       "current: nested 3 levels → chain"   "a > b > c" "$out"
 
@@ -296,22 +310,13 @@ assert_eq       "current: nested 3 levels → chain"   "a > b > c" "$out"
 run "$ATCH" -i
 assert_exit "legacy -i: outside session → exit 1"    1 "$rc"
 
-# verify that env var names are derived from the binary name:
-# when run as 'atch', SESSION var must be ATCH_SESSION
+# verify that ATCH_SESSION is set in the child and contains the socket path
 "$ATCH" start envname-test sh -c \
     'printf "%s\n" "$ATCH_SESSION" > /tmp/atch-envname.txt'
 sleep 0.1
 run grep -q "envname-test" /tmp/atch-envname.txt
-assert_exit "current: env var is ATCH_SESSION for binary named atch" 0 "$rc"
+assert_exit "current: ATCH_SESSION set in child and contains socket path" 0 "$rc"
 rm -f /tmp/atch-envname.txt
-
-# verify ATCH_SESSIONS is also set in the child
-"$ATCH" start envchain-test sh -c \
-    'printf "%s\n" "$ATCH_SESSIONS" > /tmp/atch-envchain.txt'
-sleep 0.1
-run grep -q "envchain-test" /tmp/atch-envchain.txt
-assert_exit "current: env var is ATCH_SESSIONS for binary named atch" 0 "$rc"
-rm -f /tmp/atch-envchain.txt
 
 # verify that dashes (and other non-alphanumeric chars) in the binary name
 # are replaced with underscores in the env var name:

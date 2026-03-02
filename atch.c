@@ -1,15 +1,14 @@
 #include "atch.h"
 
-/* Env-var name strings, computed from progname at startup. */
+/* Env-var name string, computed from progname at startup. */
 const char *session_envvar;
-const char *session_chain_envvar;
 
-/* Build "NAME_SESSION" / "NAME_SESSIONS" from the basename of progname.
+/* Build "NAME_SESSION" from the basename of progname.
+** Non-alphanumeric characters are replaced with '_'.
 ** Uses static storage — called once before any fork. */
 static void init_envvar_names(void)
 {
 	static char envname[128];
-	static char chainname[128];
 	const char *base = strrchr(progname, '/');
 	const char *p;
 	char *d;
@@ -25,15 +24,6 @@ static void init_envvar_names(void)
 		    *p : '_';
 	strcpy(d, "_SESSION");
 	session_envvar = envname;
-
-	d = chainname;
-	max = sizeof(chainname) - sizeof("_SESSIONS");
-	for (p = base; *p && (size_t)(d - chainname) < max; p++)
-		*d++ = (*p >= 'a' && *p <= 'z') ? (char)(*p - 'a' + 'A') :
-		    ((*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9')) ?
-		    *p : '_';
-	strcpy(d, "_SESSIONS");
-	session_chain_envvar = chainname;
 }
 
 /* Returns the basename of the current session socket path. */
@@ -316,29 +306,19 @@ static int cmd_list(void)
 	return list_main();
 }
 
-/* atch current */
+/* atch current
+** SESSION_ENVVAR holds the colon-separated ancestry chain, outermost first.
+** A single (non-nested) session has no colon. */
 static int cmd_current(void)
 {
-	const char *chain = getenv(SESSION_CHAIN_ENVVAR);
-	const char *single;
+	const char *chain = getenv(SESSION_ENVVAR);
 	char *copy, *seg, *colon;
 	const char *name;
 	int first;
 
-	/* Not inside any session. */
-	if ((!chain || !*chain) &&
-	    (!(single = getenv(SESSION_ENVVAR)) || !*single))
+	if (!chain || !*chain)
 		return 1;
 
-	/* No chain var — unusual, fall back to SESSION var alone. */
-	if (!chain || !*chain) {
-		name = strrchr(single, '/');
-		printf("%s\n", name ? name + 1 : single);
-		return 0;
-	}
-
-	/* Walk the colon-separated chain (outermost first) and print
-	 ** each session's basename separated by " > ". */
 	copy = strdup(chain);
 	if (!copy)
 		return 1;
@@ -453,14 +433,29 @@ static int cmd_push(int argc, char **argv)
 /* atch kill <session> — stop session */
 static int cmd_kill(int argc, char **argv)
 {
+	int force = 0;
+
+	/* Accept -f / --force before or after the session name. */
+	while (argc >= 1 && (strcmp(argv[0], "-f") == 0 ||
+			     strcmp(argv[0], "--force") == 0)) {
+		force = 1;
+		argc--;
+		argv++;
+	}
 	if (consume_session(&argc, &argv))
 		return 1;
+	while (argc >= 1 && (strcmp(argv[0], "-f") == 0 ||
+			     strcmp(argv[0], "--force") == 0)) {
+		force = 1;
+		argc--;
+		argv++;
+	}
 	if (argc > 0) {
 		printf("%s: Invalid number of arguments.\n", progname);
 		printf("Try '%s --help' for more information.\n", progname);
 		return 1;
 	}
-	return kill_main();
+	return kill_main(force);
 }
 
 /* atch clear <session> — truncate the on-disk session log */
@@ -538,8 +533,9 @@ static void usage(void)
 	       "\tCreate session, master in foreground\n"
 	       "  push    <session>"
 	       "\t\t\tPipe stdin into session\n"
-	       "  kill    <session>"
-	       "\t\t\tStop session (SIGTERM then SIGKILL)\n"
+	       "  kill    [-f] <session>"
+	       "\t\tStop session (SIGTERM then SIGKILL)\n"
+	       "    -f, --force\t\t\tSkip grace period, send SIGKILL immediately\n"
 	       "  clear   <session>"
 	       "\t\t\tTruncate the session log\n"
 	       "  list\t\t\t\t\tList all sessions\n"
@@ -653,7 +649,7 @@ int main(int argc, char **argv)
 				       "information.\n", progname);
 				return 1;
 			}
-			return kill_main();
+			return kill_main(0);
 		}
 
 		if (parse_options(&argc, &argv))

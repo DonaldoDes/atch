@@ -7,7 +7,6 @@
 #define HAVE_UNISTD_H 1
 
 #define PACKAGE_NAME "atch"
-#define PACKAGE_NAME_UPPER "ATCH"
 #ifndef PACKAGE_VERSION
 #define PACKAGE_VERSION "dev"
 #endif

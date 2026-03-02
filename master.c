@@ -151,9 +151,11 @@ static int init_pty(char **argv, int statusfd)
 		return -1;
 	else if (the_pty.pid == 0) {
 		/* Child.. Execute the program. */
-		setenv(SESSION_ENVVAR, sockname, 1);
+		/* SESSION_ENVVAR holds the colon-separated ancestry chain,
+		 ** outermost first, ending with the current session's socket.
+		 ** A single (non-nested) session has no colon. */
 		{
-			const char *prev = getenv(SESSION_CHAIN_ENVVAR);
+			const char *prev = getenv(SESSION_ENVVAR);
 			if (prev && *prev) {
 				size_t len =
 				    strlen(prev) + 1 + strlen(sockname) + 1;
@@ -161,11 +163,11 @@ static int init_pty(char **argv, int statusfd)
 				if (chain) {
 					snprintf(chain, len, "%s:%s", prev,
 						 sockname);
-					setenv(SESSION_CHAIN_ENVVAR, chain, 1);
+					setenv(SESSION_ENVVAR, chain, 1);
 					free(chain);
 				}
 			} else {
-				setenv(SESSION_CHAIN_ENVVAR, sockname, 1);
+				setenv(SESSION_ENVVAR, sockname, 1);
 			}
 		}
 		execvp(*argv, argv);

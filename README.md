@@ -81,7 +81,7 @@ If no command is given, `$SHELL` is used.
 | `start <session> [cmd...]` | Create a new session, detached (atch exits immediately). Prints a confirmation on success. |
 | `run <session> [cmd...]` | Like `start`, but atch stays in the foreground instead of daemonizing. |
 | `push <session>` | Copy stdin verbatim to the session. |
-| `kill <session>` | Gracefully stop a session (SIGTERM, then SIGKILL after 5 s if needed). |
+| `kill [-f] <session>` | Gracefully stop a session (SIGTERM, then SIGKILL after 5 s if needed). With `-f` / `--force`, skip the grace period and send SIGKILL immediately. |
 | `clear <session>` | Truncate the on-disk session log. |
 | `list` | List all sessions. Shows `[attached]` when a client is connected, `[stale]` for leftover sockets with no running master. Prints `(no sessions)` when the list is empty. |
 | `current` | Print the current session name and exit 0 if inside a session; exit 1 silently if not. |
@@ -185,24 +185,36 @@ To use a custom path, include a `/` in the session name:
 atch new /tmp/mysession
 ```
 
-`atch` sets the `ATCH_SESSION` environment variable inside each session to the
-socket path. This prevents recursive self-attach and can be used by shell
-prompts or scripts to detect whether they are running inside an `atch` session.
+`atch` sets the `ATCH_SESSION` environment variable inside each session to a
+colon-separated ancestry chain of socket paths, outermost first. A
+non-nested session has a single path; nested sessions accumulate:
 
-Use `atch current` to check from a script or prompt:
+```
+outer session:   ATCH_SESSION=/home/user/.cache/atch/outer
+inner session:   ATCH_SESSION=/home/user/.cache/atch/outer:/home/user/.cache/atch/inner
+```
+
+This serves two purposes: self-attach prevention (any ancestor in the chain
+is rejected) and session detection from scripts. Use `atch current` to get
+the human-readable session name — it prints just the basenames separated by
+` > `:
 
 ```sh
 # exit code: 0 inside a session, 1 outside
 atch current && echo "inside session: $(atch current)"
 
+# nested session example:
+# outer > inner
+
 # shell prompt example (bash/zsh PS1)
 PS1='$(atch current 2>/dev/null && echo "[$(atch current)] ")$ '
 ```
 
-Sessions can be nested: running `atch new inner` from within a session is
-allowed. `ATCH_SESSION` is set only in the child process of each master, so
-the outer session's shell always retains its own value — the self-attach
-protection works correctly at all nesting levels.
+To test whether you are inside any `atch` session:
+
+```sh
+[ -n "$ATCH_SESSION" ] && echo "inside a session"
+```
 
 ## Session history
 
