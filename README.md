@@ -75,14 +75,15 @@ If no command is given, `$SHELL` is used.
 
 | Command | Description |
 |---------|-------------|
-| `atch [<session> [cmd...]]` | Attach to a session, or create it if it doesn't exist (default behavior). |
+| `atch [<session> [cmd...]]` | Attach to a session, or create it if it doesn't exist (default behavior). Prints a confirmation when a new session is created. |
 | `attach <session>` | Strict attach — fail if the session does not exist. |
-| `new <session> [cmd...]` | Create a new session and attach to it. |
-| `start <session> [cmd...]` | Create a new session, detached (atch exits immediately). |
+| `new <session> [cmd...]` | Create a new session and attach to it. Prints a confirmation before attaching. |
+| `start <session> [cmd...]` | Create a new session, detached (atch exits immediately). Prints a confirmation on success. |
 | `run <session> [cmd...]` | Like `start`, but atch stays in the foreground instead of daemonizing. |
 | `push <session>` | Copy stdin verbatim to the session. |
 | `kill <session>` | Gracefully stop a session (SIGTERM, then SIGKILL after 5 s if needed). |
-| `list` | List all sessions in the session directory, with liveness status. |
+| `clear <session>` | Truncate the on-disk session log. |
+| `list` | List all sessions. Shows `[attached]` when a client is connected, `[stale]` for leftover sockets with no running master. Prints `(no sessions)` when the list is empty. |
 | `current` | Print the current session name and exit 0 if inside a session; exit 1 silently if not. |
 
 Short aliases: `a` → `attach`, `n` → `new`, `s` → `start`, `p` → `push`,
@@ -90,7 +91,7 @@ Short aliases: `a` → `attach`, `n` → `new`, `s` → `start`, `p` → `push`,
 
 ## Options
 
-Options can appear before or after the session name.
+Options can appear before the subcommand, before the session name, or after the session name.
 
 | Flag | Description |
 |------|-------------|
@@ -141,6 +142,12 @@ atch work
 **Run a command fully detached (no terminal needed):**
 ```sh
 atch start daemon myserver
+# atch: session 'daemon' started
+```
+
+Use `-q` to suppress confirmation messages in scripts:
+```sh
+atch start -q daemon myserver
 ```
 
 **Send keystrokes to a running session:**
@@ -150,7 +157,7 @@ printf 'ls -la\n' | atch push work
 
 **Use a custom detach character:**
 ```sh
-atch attach work -e '^A'
+atch -e '^A' attach work
 ```
 
 **List all sessions:**

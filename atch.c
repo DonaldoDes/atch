@@ -1,7 +1,5 @@
 #include "atch.h"
 
-const char copyright[] = PACKAGE_NAME " - version " PACKAGE_VERSION;
-
 /* Returns the basename of the current session socket path. */
 const char *session_shortname(void)
 {
@@ -322,6 +320,9 @@ static int cmd_new(int argc, char **argv)
 		return 1;
 	if (master_main(argv, 1, 0) != 0)
 		return 1;
+	if (!quiet)
+		printf("%s: session '%s' created\n", progname,
+		       session_shortname());
 	return attach_main(0);
 }
 
@@ -336,7 +337,12 @@ static int cmd_start(int argc, char **argv)
 		return 1;
 	argv = use_shell_if_no_cmd(argc, argv);
 	save_term();
-	return master_main(argv, 0, 0);
+	if (master_main(argv, 0, 0) != 0)
+		return 1;
+	if (!quiet)
+		printf("%s: session '%s' started\n", progname,
+		       session_shortname());
+	return 0;
 }
 
 /* atch run <session> [cmd...] — create, master stays in foreground */
@@ -426,6 +432,9 @@ static int cmd_open(char *session, int argc, char **argv)
 				unlink(sockname);
 			if (master_main(argv, 1, 0) != 0)
 				return 1;
+			if (!quiet)
+				printf("%s: session '%s' created\n", progname,
+				       session_shortname());
 		}
 		return attach_main(0);
 	}
@@ -493,10 +502,31 @@ int main(int argc, char **argv)
 	}
 
 	/*
+	** Pre-pass: consume any global options (-q, -e, -E, -r, -R, -z, -t)
+	** that appear before the subcommand or legacy mode letter.  We stop
+	** (without error) as soon as we see a flag that is not a known global
+	** option, so legacy mode letters like -a/-n still reach the dispatcher
+	** below unchanged.
+	*/
+	while (argc >= 1 && argv[0][0] == '-' && argv[0][1] != '\0' &&
+	       argv[0][1] != '-') {
+		char c = argv[0][1];
+
+		if (c != 'e' && c != 'E' && c != 'r' && c != 'R' &&
+		    c != 'z' && c != 'q' && c != 't')
+			break;
+		if (parse_options(&argc, &argv))
+			return 1;
+	}
+	if (argc < 1)
+		usage();
+
+	/*
 	** Legacy backward-compat: flag-based syntax (-a, -c, -n, -N, etc.).
 	** Detected when the first argument is a single-dash flag.
 	*/
-	if ((*argv)[0] == '-' && (*argv)[1] != '\0' && (*argv)[1] != '-') {
+	if (argc >= 1 && argv[0][0] == '-' && argv[0][1] != '\0' &&
+	    argv[0][1] != '-') {
 		int mode = (*argv)[1];
 
 		++argv;

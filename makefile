@@ -49,6 +49,12 @@ alpine-build-docker: build-image
 	docker run --rm -v "$$PWD":/src -e VERSION=$(VERSION) -w /src \
 		--platform linux/$(arch) $(IMAGE):$(arch) ./build.sh
 
+.PHONY: test
+test: alpine-build-docker
+	docker run --rm -v "$$PWD":/src \
+		--platform linux/$(arch) $(IMAGE):$(arch) \
+		sh /src/tests/test.sh /src/build/atch
+
 .PHONY: release
 release: man $(archs)
 

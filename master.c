@@ -695,7 +695,12 @@ int master_main(char **argv, int waitattach, int dontfork)
 	/* Create the unix domain socket. */
 	s = create_socket(sockname);
 	if (s < 0) {
-		printf("%s: %s: %s\n", progname, sockname, strerror(errno));
+		if (errno == EADDRINUSE)
+			printf("%s: session '%s' is already running\n",
+			       progname, session_shortname());
+		else
+			printf("%s: %s: %s\n", progname, sockname,
+			       strerror(errno));
 		return 1;
 	}
 

@@ -518,13 +518,14 @@ int list_main(void)
 	DIR *d;
 	struct dirent *ent;
 	time_t now = time(NULL);
+	int count = 0;
 
 	get_session_dir(dir, sizeof(dir));
 
 	d = opendir(dir);
 	if (!d) {
 		if (errno == ENOENT)
-			return 0;
+			goto empty;
 		printf("%s: %s: %s\n", progname, dir, strerror(errno));
 		return 1;
 	}
@@ -545,14 +546,26 @@ int list_main(void)
 
 		s = connect_socket(path);
 		if (s >= 0) {
+			int attached = st.st_mode & S_IXUSR;
 			close(s);
-			printf("%-24s since %s ago\n", ent->d_name, age);
+			if (attached)
+				printf("%-24s since %s ago [attached]\n",
+				       ent->d_name, age);
+			else
+				printf("%-24s since %s ago\n",
+				       ent->d_name, age);
+			count++;
 		} else if (errno == ECONNREFUSED) {
 			printf("%-24s since %s ago [stale]\n", ent->d_name,
 			       age);
+			count++;
 		}
 	}
 
 	closedir(d);
+
+empty:
+	if (count == 0 && !quiet)
+		printf("(no sessions)\n");
 	return 0;
 }
