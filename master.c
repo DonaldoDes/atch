@@ -39,6 +39,7 @@ static struct pty the_pty;
 
 /* Persistent session log */
 static int log_fd = -1;
+static size_t log_written;
 static time_t master_start_time;
 
 /* Scrollback ring buffer */
@@ -47,36 +48,46 @@ static size_t scrollback_head;	/* physical index of the oldest byte */
 static size_t scrollback_len;	/* number of valid bytes, 0..SCROLLBACK_SIZE */
 
 /*
+** Trim log_fd to its last LOG_MAX_SIZE bytes, then seek to the end.
+** Called at startup and whenever log_written reaches LOG_MAX_SIZE.
+*/
+static void rotate_log(void)
+{
+	off_t size;
+	char *buf;
+	ssize_t n;
+
+	size = lseek(log_fd, 0, SEEK_END);
+	if (size > LOG_MAX_SIZE) {
+		buf = malloc(LOG_MAX_SIZE);
+		if (buf) {
+			lseek(log_fd, size - LOG_MAX_SIZE, SEEK_SET);
+			n = read(log_fd, buf, LOG_MAX_SIZE);
+			if (n > 0) {
+				ftruncate(log_fd, 0);
+				lseek(log_fd, 0, SEEK_SET);
+				write(log_fd, buf, (size_t)n);
+			}
+			free(buf);
+		}
+	}
+	lseek(log_fd, 0, SEEK_END);
+}
+
+/*
 ** Open (or create) the session log, trimming it to LOG_MAX_SIZE if it has
 ** grown larger. Returns the fd positioned at the end, ready for appending.
 */
 static int open_log(const char *path)
 {
 	int fd;
-	off_t size;
-	char *buf;
-	ssize_t n;
 
 	fd = open(path, O_RDWR | O_CREAT, 0600);
 	if (fd < 0)
 		return -1;
 
-	size = lseek(fd, 0, SEEK_END);
-	if (size > LOG_MAX_SIZE) {
-		buf = malloc(LOG_MAX_SIZE);
-		if (buf) {
-			lseek(fd, size - LOG_MAX_SIZE, SEEK_SET);
-			n = read(fd, buf, LOG_MAX_SIZE);
-			if (n > 0) {
-				ftruncate(fd, 0);
-				lseek(fd, 0, SEEK_SET);
-				write(fd, buf, (size_t)n);
-			}
-			free(buf);
-		}
-	}
-
-	lseek(fd, 0, SEEK_END);
+	log_fd = fd;
+	rotate_log();
 	return fd;
 }
 
@@ -375,8 +386,14 @@ static void pty_activity(int s)
 		exit(1);
 	}
 	scrollback_append(buf, (size_t)len);
-	if (log_fd >= 0)
+	if (log_fd >= 0) {
 		write(log_fd, buf, (size_t)len);
+		log_written += (size_t)len;
+		if (log_written >= LOG_MAX_SIZE) {
+			rotate_log();
+			log_written = 0;
+		}
+	}
 #ifdef BROKEN_MASTER
 	/* Get the current terminal settings. */
 	if (tcgetattr(the_pty.slave, &the_pty.term) < 0)
