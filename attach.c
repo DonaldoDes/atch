@@ -1052,7 +1052,7 @@ static int interactive_picker(struct session_entry *entries, int count)
 
 		/* Help banner */
 		fprintf(stderr,
-			"\033[2mEnter=attach  k=kill  r=rename  Esc=quit\033[0m\r\n");
+			"\033[2mEnter=attach  k=kill  r=rename  n=new  Esc=quit\033[0m\r\n");
 		display_lines = count + 1;
 
 		/* Read a key */
@@ -1268,6 +1268,112 @@ static int interactive_picker(struct session_entry *entries, int count)
 				fflush(stderr);
 
 				rename_main(old_path, new_path);
+
+				/* Re-collect sessions */
+				count = collect_sessions(dir, entries,
+							 MAX_SESSIONS);
+				if (count == 0) {
+					if (!quiet)
+						printf("(no sessions)\n");
+					return 0;
+				}
+
+				/* Reset selection */
+				sel = 0;
+				for (i = 0; i < count; i++) {
+					if (!entries[i].dead) {
+						sel = i;
+						break;
+					}
+				}
+
+				/* Re-enter raw mode */
+				tcsetattr(0, TCSADRAIN, &raw);
+				fprintf(stderr, "\033[?25l");
+			}
+			continue;
+		} else if (c == 'n' || c == 'N') {
+			/* New: create a new session */
+
+			/* Clear and re-render with new-session prompt */
+			fprintf(stderr, "\033[%dA", display_lines);
+			for (i = 0; i < display_lines; i++)
+				fprintf(stderr, "\033[2K\r\n");
+			fprintf(stderr, "\033[%dA", display_lines);
+
+			for (i = 0; i < count; i++) {
+				if (i == sel && !entries[i].dead)
+					fprintf(stderr,
+						"\033[7m> %s\033[0m\r\n",
+						entries[i].label);
+				else if (entries[i].dead)
+					fprintf(stderr,
+						"\033[2m  %s\033[0m\r\n",
+						entries[i].label);
+				else
+					fprintf(stderr, "  %s\r\n",
+						entries[i].label);
+			}
+			fprintf(stderr,
+				"\033[33mNew session name: \033[0m");
+			fflush(stderr);
+
+			/* Show cursor for input */
+			fprintf(stderr, "\033[?25h");
+
+			{
+				char new_name[256];
+				int nlen;
+				char path[768];
+				char *shell_argv[2];
+				const char *shell;
+				struct passwd *pw;
+
+				nlen = picker_readline(new_name,
+						       (int)sizeof(new_name));
+
+				/* Hide cursor again */
+				fprintf(stderr, "\033[?25l");
+
+				if (nlen <= 0) {
+					/* Cancelled (Escape or Ctrl-C) */
+					fprintf(stderr, "\r\033[2K");
+					fprintf(stderr, "\033[%dA", count);
+					continue;
+				}
+
+				/* Validate: no slashes in name */
+				if (strchr(new_name, '/') != NULL) {
+					fprintf(stderr, "\r\033[2K");
+					fprintf(stderr, "\033[%dA", count);
+					continue;
+				}
+
+				snprintf(path, sizeof(path),
+					 "%s/%s", dir, new_name);
+
+				/* Temporarily restore terminal for start output */
+				tcsetattr(0, TCSADRAIN, &orig);
+				fprintf(stderr, "\033[?25h");
+				fflush(stderr);
+
+				/* Create the session (detached) */
+				sockname = path;
+
+				/* Resolve default shell */
+				shell = getenv("SHELL");
+				if (!shell || !*shell) {
+					pw = getpwuid(getuid());
+					if (pw && pw->pw_shell
+					    && *pw->pw_shell)
+						shell = pw->pw_shell;
+				}
+				if (!shell || !*shell)
+					shell = "/bin/sh";
+				shell_argv[0] = (char *)shell;
+				shell_argv[1] = NULL;
+
+				master_main(shell_argv, 0, 0);
 
 				/* Re-collect sessions */
 				count = collect_sessions(dir, entries,

@@ -1210,6 +1210,136 @@ assert_contains "rename: no args → message"             "No session was specif
 run "$ATCH" rename rn-onearg
 assert_exit     "rename: one arg → exit 1"              1 "$rc"
 
+# ── 29. picker n=new: create session from interactive picker ──────────────────
+#
+# US-009: pressing 'n' in the interactive picker must:
+#   a) show an inline prompt "New session name: "
+#   b) create the session via start, then refresh the picker
+#   c) empty name → ignored, return to picker
+#   d) Escape → cancel, return to picker
+#   e) help banner includes n=new
+#
+# Strategy: use expect(1) to drive the picker with a real PTY.
+# Test requires at least one existing session so the picker is shown.
+
+if command -v expect >/dev/null 2>&1; then
+
+    # 29a. help banner includes n=new
+    "$ATCH" start pn-banner sleep 999
+    wait_socket pn-banner
+
+    BANNER_OUT=$(mktemp)
+    expect - << 'EXPECT_EOF' > "$BANNER_OUT" 2>&1
+set timeout 3
+spawn sh -c "exec $env(ATCH) list 2>&1"
+sleep 1
+send "\x1b"
+expect eof
+EXPECT_EOF
+
+    if grep -q "n=new" "$BANNER_OUT"; then
+        ok "picker-new: help banner contains n=new"
+    else
+        fail "picker-new: help banner contains n=new" "n=new in banner" "not found"
+    fi
+    rm -f "$BANNER_OUT"
+    tidy pn-banner
+
+    # 29b. n + session name → session created and appears in list
+    "$ATCH" start pn-exist sleep 999
+    wait_socket pn-exist
+
+    PICKER_OUT=$(mktemp)
+    expect - << 'EXPECT_EOF' > "$PICKER_OUT" 2>&1
+set timeout 5
+spawn sh -c "exec $env(ATCH) list 2>&1"
+sleep 0.5
+send "n"
+sleep 0.5
+send "pn-created\r"
+sleep 1
+send "\x1b"
+expect eof
+EXPECT_EOF
+
+    # Verify the session was actually created
+    run "$ATCH" list
+    if echo "$out" | grep -q "pn-created"; then
+        ok "picker-new: n + name creates session"
+    else
+        fail "picker-new: n + name creates session" "pn-created in list" "$out"
+    fi
+    rm -f "$PICKER_OUT"
+    tidy pn-exist
+    tidy pn-created
+
+    # 29c. n + empty name (just Enter) → no session created
+    "$ATCH" start pn-empty sleep 999
+    wait_socket pn-empty
+
+    # Count sessions before
+    BEFORE_COUNT=$("$ATCH" list --no-picker 2>/dev/null | wc -l | tr -d ' ')
+
+    PICKER_OUT=$(mktemp)
+    expect - << 'EXPECT_EOF' > "$PICKER_OUT" 2>&1
+set timeout 5
+spawn sh -c "exec $env(ATCH) list 2>&1"
+sleep 0.5
+send "n"
+sleep 0.5
+send "\r"
+sleep 0.5
+send "\x1b"
+expect eof
+EXPECT_EOF
+
+    # Count sessions after — must be same
+    AFTER_COUNT=$("$ATCH" list --no-picker 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$BEFORE_COUNT" = "$AFTER_COUNT" ]; then
+        ok "picker-new: n + empty name → no session created"
+    else
+        fail "picker-new: n + empty name → no session created" \
+             "$BEFORE_COUNT sessions" "$AFTER_COUNT sessions"
+    fi
+    rm -f "$PICKER_OUT"
+    tidy pn-empty
+
+    # 29d. n + Escape → cancel, no session created
+    "$ATCH" start pn-esc sleep 999
+    wait_socket pn-esc
+
+    BEFORE_COUNT=$("$ATCH" list --no-picker 2>/dev/null | wc -l | tr -d ' ')
+
+    PICKER_OUT=$(mktemp)
+    expect - << 'EXPECT_EOF' > "$PICKER_OUT" 2>&1
+set timeout 5
+spawn sh -c "exec $env(ATCH) list 2>&1"
+sleep 0.5
+send "n"
+sleep 0.5
+send "\x1b"
+sleep 0.5
+send "\x1b"
+expect eof
+EXPECT_EOF
+
+    AFTER_COUNT=$("$ATCH" list --no-picker 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$BEFORE_COUNT" = "$AFTER_COUNT" ]; then
+        ok "picker-new: n + Escape → no session created"
+    else
+        fail "picker-new: n + Escape → no session created" \
+             "$BEFORE_COUNT sessions" "$AFTER_COUNT sessions"
+    fi
+    rm -f "$PICKER_OUT"
+    tidy pn-esc
+
+else
+    ok "picker-new: skip (expect not available)"
+    ok "picker-new: skip (expect not available)"
+    ok "picker-new: skip (expect not available)"
+    ok "picker-new: skip (expect not available)"
+fi
+
 # ── summary ──────────────────────────────────────────────────────────────────
 
 printf "\n1..%d\n" "$T"
