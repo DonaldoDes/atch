@@ -523,6 +523,44 @@ static int cmd_kill(int argc, char **argv)
 	return kill_main(force);
 }
 
+/* atch rename <old> <new> — rename a session (socket + .log + .ppid) */
+static int cmd_rename(int argc, char **argv)
+{
+	char *old_session, *new_session;
+	char old_path[768], new_path[768];
+	char dir[512];
+
+	if (argc < 1) {
+		printf("%s: No session was specified.\n", progname);
+		printf("Try '%s --help' for more information.\n", progname);
+		return 1;
+	}
+	old_session = argv[0];
+	argc--;
+	argv++;
+
+	if (argc < 1) {
+		printf("%s: No new name was specified.\n", progname);
+		printf("Try '%s --help' for more information.\n", progname);
+		return 1;
+	}
+	new_session = argv[0];
+	argc--;
+	argv++;
+
+	if (argc > 0) {
+		printf("%s: Invalid number of arguments.\n", progname);
+		printf("Try '%s --help' for more information.\n", progname);
+		return 1;
+	}
+
+	get_session_dir(dir, sizeof(dir));
+	snprintf(old_path, sizeof(old_path), "%s/%s", dir, old_session);
+	snprintf(new_path, sizeof(new_path), "%s/%s", dir, new_session);
+
+	return rename_main(old_path, new_path);
+}
+
 /* atch clear <session> — truncate the on-disk session log */
 static int cmd_clear(int argc, char **argv)
 {
@@ -615,9 +653,11 @@ static void usage(void)
 	       "  kill    [-f] <session>"
 	       "\t\tStop session (SIGTERM then SIGKILL)\n"
 	       "    -f, --force\t\t\tSkip grace period, send SIGKILL immediately\n"
+	       "  rename  <old> <new>"
+	       "\t\tRename a session\n"
 	       "  clear   [<session>]"
 	       "\t\t\tTruncate the session log\n"
-	       "  list\t\t\t\t\tList all sessions\n"
+	       "  list\t\t\t\t\tList all sessions (interactive picker)\n"
 	       "  clean\t\t\t\t\tRemove orphan (dead) sessions\n"
 	       "  current\t\t\t\tPrint current session name\n"
 	       "\n"
@@ -807,6 +847,8 @@ int main(int argc, char **argv)
 		return cmd_kill(argc, argv);
 	if (is_cmd(cmd, "clear", NULL, NULL))
 		return cmd_clear(argc, argv);
+	if (is_cmd(cmd, "rename", "mv", NULL))
+		return cmd_rename(argc, argv);
 	if (is_cmd(cmd, "clean", NULL, NULL))
 		return cmd_clean();
 

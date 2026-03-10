@@ -143,6 +143,7 @@ int push_main(void);
 int list_main(int no_picker);
 int clean_main(void);
 int kill_main(int force);
+int rename_main(const char *old_name, const char *new_name);
 
 char const * clear_csi_data(void);
 

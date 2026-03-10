@@ -83,11 +83,13 @@ If no command is given, `$SHELL` is used.
 | `push <session>` | Copy stdin verbatim to the session. |
 | `kill [-f] <session>` | Gracefully stop a session (SIGTERM, then SIGKILL after 5 s if needed). With `-f` / `--force`, skip the grace period and send SIGKILL immediately. |
 | `clear [<session>]` | Truncate the on-disk session log. Defaults to the current session when run inside one. |
-| `list` | List all sessions. Shows `[attached]` when a client is connected, `[stale]` for leftover sockets with no running master. Prints `(no sessions)` when the list is empty. |
+| `list [--no-picker]` | List all sessions. When stdout is a TTY, opens an interactive picker (arrow keys to navigate, Enter to attach, `k` to kill, `r` to rename, Esc/Ctrl-C to quit). Dead sessions (orphan sockets with no running master) are shown in dim text and cannot be selected. Use `--no-picker` to force plain text output. Falls back to plain text automatically when stdout is not a TTY. Shows `[attached]` when a client is connected, `[dead]` for orphan sockets. Prints `(no sessions)` when the list is empty. Dead sessions are auto-cleaned (socket, log, and ppid files removed) during listing. |
+| `clean` | Remove all orphan (dead) sessions from the session directory. For each orphan, the socket, `.log`, and `.ppid` files are deleted. Prints the name of each removed session unless `-q` is set. |
+| `rename <old> <new>` | Rename a live session. The socket, `.log`, and `.ppid` files are all renamed. The session must be running; dead sessions cannot be renamed. |
 | `current` | Print the current session name and exit 0 if inside a session; exit 1 silently if not. |
 
 Short aliases: `a` → `attach`, `n` → `new`, `s` → `start`, `p` → `push`,
-`k` → `kill`, `l` / `ls` → `list`.
+`k` → `kill`, `l` / `ls` → `list`, `mv` → `rename`.
 
 ## Options
 
@@ -270,6 +272,10 @@ replays the most recent output instantly so your display is current. When the
 on-disk log is also present it covers the full history; when logging is
 disabled (`-C 0`) the ring is the only replay source available while the
 session is live.
+
+On-disk log replay is also capped at 128 KB (the `SCROLLBACK_SIZE` value):
+only the last 128 KB of the log file is replayed to avoid flooding the
+terminal when re-attaching to a session with a very large log.
 
 The ring is lost when the master exits; the on-disk log covers that case.
 

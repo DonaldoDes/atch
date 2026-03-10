@@ -1121,6 +1121,95 @@ run "$ATCH" clean
 assert_exit "clean: no orphans → exits 0" 0 "$rc"
 assert_contains "clean: no orphans → message" "no orphan" "$out"
 
+# ── 28. rename command ───────────────────────────────────────────────────────
+#
+# US-008: `atch rename <old> <new>` must atomically rename socket + .log + .ppid
+#
+# Criteria:
+#   a) Renames a live session: socket, .log, .ppid all renamed
+#   b) After rename, old session name is gone from list, new name appears
+#   c) Session remains functional after rename (can be killed by new name)
+#   d) Dead sessions cannot be renamed
+#   e) Missing session → error
+#   f) Target name already exists → error
+
+# 28a. rename a live session
+"$ATCH" start rn-old sleep 999
+wait_socket rn-old
+RN_OLD_SOCK="$HOME/.cache/atch/rn-old"
+
+# Verify .log and .ppid exist before rename
+[ -f "${RN_OLD_SOCK}.log" ] && ok "rename: .log exists before rename" \
+    || fail "rename: .log exists before rename" "file exists" "not found"
+[ -f "${RN_OLD_SOCK}.ppid" ] && ok "rename: .ppid exists before rename" \
+    || fail "rename: .ppid exists before rename" "file exists" "not found"
+
+run "$ATCH" rename rn-old rn-new
+assert_exit     "rename: live session → exit 0"         0 "$rc"
+assert_contains "rename: confirmation message"          "renamed" "$out"
+
+# Old files must be gone
+[ ! -e "$RN_OLD_SOCK" ] && ok "rename: old socket removed" \
+    || fail "rename: old socket removed" "removed" "still present"
+[ ! -e "${RN_OLD_SOCK}.log" ] && ok "rename: old .log removed" \
+    || fail "rename: old .log removed" "removed" "still present"
+[ ! -e "${RN_OLD_SOCK}.ppid" ] && ok "rename: old .ppid removed" \
+    || fail "rename: old .ppid removed" "removed" "still present"
+
+# New files must exist
+RN_NEW_SOCK="$HOME/.cache/atch/rn-new"
+[ -S "$RN_NEW_SOCK" ] && ok "rename: new socket exists" \
+    || fail "rename: new socket exists" "socket file" "not found"
+[ -f "${RN_NEW_SOCK}.log" ] && ok "rename: new .log exists" \
+    || fail "rename: new .log exists" "file exists" "not found"
+[ -f "${RN_NEW_SOCK}.ppid" ] && ok "rename: new .ppid exists" \
+    || fail "rename: new .ppid exists" "file exists" "not found"
+
+# 28b. new name appears in list, old name does not
+run "$ATCH" list
+assert_contains     "rename: new name in list"          "rn-new" "$out"
+assert_not_contains "rename: old name not in list"      "rn-old" "$out"
+
+# 28c. session is still functional (killable by new name)
+run "$ATCH" kill rn-new
+assert_exit     "rename: kill by new name → exit 0"     0 "$rc"
+assert_contains "rename: kill by new name → stopped"    "stopped" "$out"
+
+# 28d. dead session cannot be renamed
+"$ATCH" run rn-dead sleep 99999 &
+RN_DEAD_PID=$!
+wait_socket rn-dead
+kill -9 "$RN_DEAD_PID" 2>/dev/null
+sleep 0.2
+
+run "$ATCH" rename rn-dead rn-dead2
+assert_exit     "rename: dead session → exit 1"         1 "$rc"
+assert_contains "rename: dead session → message"        "not running" "$out"
+rm -f "$HOME/.cache/atch/rn-dead" "$HOME/.cache/atch/rn-dead.log" "$HOME/.cache/atch/rn-dead.ppid"
+
+# 28e. missing session → error
+run "$ATCH" rename rn-noexist rn-noexist2
+assert_exit     "rename: missing session → exit 1"      1 "$rc"
+assert_contains "rename: missing session → message"     "does not exist" "$out"
+
+# 28f. target name already exists → error
+"$ATCH" start rn-src sleep 999
+"$ATCH" start rn-dst sleep 999
+run "$ATCH" rename rn-src rn-dst
+assert_exit     "rename: target exists → exit 1"        1 "$rc"
+assert_contains "rename: target exists → message"       "already exists" "$out"
+tidy rn-src
+tidy rn-dst
+
+# 28g. no args → error
+run "$ATCH" rename
+assert_exit     "rename: no args → exit 1"              1 "$rc"
+assert_contains "rename: no args → message"             "No session was specified" "$out"
+
+# 28h. one arg → error
+run "$ATCH" rename rn-onearg
+assert_exit     "rename: one arg → exit 1"              1 "$rc"
+
 # ── summary ──────────────────────────────────────────────────────────────────
 
 printf "\n1..%d\n" "$T"

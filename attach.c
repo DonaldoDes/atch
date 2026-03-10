@@ -684,6 +684,49 @@ static int session_gone(void)
 	return stat(sockname, &st) < 0 && errno == ENOENT;
 }
 
+/*
+** Return 1 if the session is gone (socket removed) or dead (socket exists
+** but master is no longer listening — ECONNREFUSED).  The latter happens
+** when a session was renamed: the master's cleanup_session unlinks the old
+** path, leaving the new-named socket as an orphan.
+**
+** If the socket is an orphan, remove it and its associated files.
+*/
+static int session_gone_or_dead(void)
+{
+	int s;
+	struct sockaddr_un sockun;
+
+	if (session_gone())
+		return 1;
+
+	/* Socket exists — try to connect */
+	if (strlen(sockname) > sizeof(sockun.sun_path) - 1)
+		return 0;	/* path too long, can't check */
+	s = socket(PF_UNIX, SOCK_STREAM, 0);
+	if (s < 0)
+		return 0;
+	sockun.sun_family = AF_UNIX;
+	memcpy(sockun.sun_path, sockname, strlen(sockname) + 1);
+	if (connect(s, (struct sockaddr *)&sockun, sizeof(sockun)) < 0) {
+		close(s);
+		if (errno == ECONNREFUSED) {
+			/* Master is gone — clean up orphan */
+			char assoc[800];
+
+			unlink(sockname);
+			snprintf(assoc, sizeof(assoc), "%s.log", sockname);
+			unlink(assoc);
+			snprintf(assoc, sizeof(assoc), "%s.ppid", sockname);
+			unlink(assoc);
+			return 1;
+		}
+		return 0;
+	}
+	close(s);
+	return 0;		/* still alive */
+}
+
 int kill_main(int force)
 {
 	const char *name = session_shortname();
@@ -707,7 +750,7 @@ int kill_main(int force)
 		}
 		for (i = 0; i < 20; i++) {
 			usleep(100000);
-			if (session_gone()) {
+			if (session_gone_or_dead()) {
 				if (!quiet)
 					printf("%s: session '%s' killed\n",
 					       progname, name);
@@ -734,7 +777,7 @@ int kill_main(int force)
 	/* Wait up to 5 seconds for graceful exit. */
 	for (i = 0; i < 50; i++) {
 		usleep(100000);
-		if (session_gone()) {
+		if (session_gone_or_dead()) {
 			printf("%s: session '%s' stopped\n", progname, name);
 			return 0;
 		}
@@ -745,7 +788,7 @@ int kill_main(int force)
 
 	for (i = 0; i < 20; i++) {
 		usleep(100000);
-		if (session_gone()) {
+		if (session_gone_or_dead()) {
 			printf("%s: session '%s' killed\n", progname, name);
 			return 0;
 		}
@@ -753,6 +796,75 @@ int kill_main(int force)
 
 	printf("%s: session '%s' did not stop\n", progname, name);
 	return 1;
+}
+
+/*
+** Rename a session: socket, .log, and .ppid files.
+** Both old_path and new_path must be full paths.
+** The session must be alive (connectable). Dead sessions cannot be renamed.
+** Returns 0 on success, 1 on error (message already printed).
+*/
+int rename_main(const char *old_path, const char *new_path)
+{
+	char old_assoc[800], new_assoc[800];
+	const char *old_name, *new_name;
+	struct stat st;
+	int s;
+
+	old_name = strrchr(old_path, '/');
+	old_name = old_name ? old_name + 1 : old_path;
+	new_name = strrchr(new_path, '/');
+	new_name = new_name ? new_name + 1 : new_path;
+
+	/* Check source exists */
+	if (stat(old_path, &st) < 0 || !S_ISSOCK(st.st_mode)) {
+		printf("%s: session '%s' does not exist\n", progname, old_name);
+		return 1;
+	}
+
+	/* Check source is alive */
+	s = socket(PF_UNIX, SOCK_STREAM, 0);
+	if (s >= 0) {
+		struct sockaddr_un sockun;
+
+		sockun.sun_family = AF_UNIX;
+		memcpy(sockun.sun_path, old_path, strlen(old_path) + 1);
+		if (connect(s, (struct sockaddr *)&sockun, sizeof(sockun)) < 0) {
+			close(s);
+			printf("%s: session '%s' is not running\n",
+			       progname, old_name);
+			return 1;
+		}
+		close(s);
+	}
+
+	/* Check target does not exist */
+	if (stat(new_path, &st) == 0) {
+		printf("%s: session '%s' already exists\n", progname, new_name);
+		return 1;
+	}
+
+	/* Rename socket */
+	if (rename(old_path, new_path) < 0) {
+		printf("%s: rename '%s' to '%s': %s\n", progname,
+		       old_name, new_name, strerror(errno));
+		return 1;
+	}
+
+	/* Rename .log (best-effort) */
+	snprintf(old_assoc, sizeof(old_assoc), "%s.log", old_path);
+	snprintf(new_assoc, sizeof(new_assoc), "%s.log", new_path);
+	rename(old_assoc, new_assoc);
+
+	/* Rename .ppid (best-effort) */
+	snprintf(old_assoc, sizeof(old_assoc), "%s.ppid", old_path);
+	snprintf(new_assoc, sizeof(new_assoc), "%s.ppid", new_path);
+	rename(old_assoc, new_assoc);
+
+	if (!quiet)
+		printf("%s: session '%s' renamed to '%s'\n",
+		       progname, old_name, new_name);
+	return 0;
 }
 
 /* Remove an orphan socket and its associated .log and .ppid files. */
@@ -846,10 +958,50 @@ static int collect_sessions(const char *dir, struct session_entry *entries,
 }
 
 /*
+** Read a line of input in raw mode, echoing to stderr.
+** Handles backspace. Returns the number of characters read,
+** or -1 if the user pressed Escape to cancel.
+** buf must be at least 'size' bytes.
+*/
+static int picker_readline(char *buf, int size)
+{
+	int pos = 0;
+	unsigned char c;
+
+	memset(buf, 0, (size_t)size);
+	while (pos < size - 1) {
+		if (read(0, &c, 1) != 1)
+			return -1;
+		if (c == 27)
+			return -1;	/* Escape = cancel */
+		if (c == '\r' || c == '\n')
+			break;
+		if (c == 127 || c == 8) {
+			/* Backspace */
+			if (pos > 0) {
+				pos--;
+				fprintf(stderr, "\b \b");
+			}
+			continue;
+		}
+		if (c == 3)
+			return -1;	/* Ctrl-C = cancel */
+		if (c < 32)
+			continue;	/* Ignore other control chars */
+		buf[pos++] = (char)c;
+		fprintf(stderr, "%c", c);
+	}
+	buf[pos] = '\0';
+	return pos;
+}
+
+/*
 ** Interactive picker: display sessions with arrow-key navigation.
 ** Enter selects a live session (execvp to atch attach <session>).
+** k = kill selected session (with y/N confirmation).
+** r = rename selected session (inline prompt).
 ** Escape / Ctrl-C exits without attaching.
-** Dead sessions are shown but not selectable.
+** Dead sessions are shown but not selectable for attach/rename.
 ** Returns 0 on Escape/Ctrl-C, or does not return on Enter (execvp).
 */
 static int interactive_picker(struct session_entry *entries, int count)
@@ -858,6 +1010,11 @@ static int interactive_picker(struct session_entry *entries, int count)
 	int sel = 0;
 	int i;
 	unsigned char c;
+	char dir[512];
+	/* +1 for help banner line */
+	int display_lines;
+
+	get_session_dir(dir, sizeof(dir));
 
 	/* Skip to the first non-dead session if possible. */
 	for (i = 0; i < count; i++) {
@@ -892,6 +1049,11 @@ static int interactive_picker(struct session_entry *entries, int count)
 				fprintf(stderr, "  %s\r\n",
 					entries[i].label);
 		}
+
+		/* Help banner */
+		fprintf(stderr,
+			"\033[2mEnter=attach  k=kill  r=rename  Esc=quit\033[0m\r\n");
+		display_lines = count + 1;
 
 		/* Read a key */
 		if (read(0, &c, 1) != 1)
@@ -944,13 +1106,199 @@ static int interactive_picker(struct session_entry *entries, int count)
 				perror(progname);
 				return 1;
 			}
+		} else if (c == 'k' || c == 'K') {
+			/* Kill: confirm then kill selected session */
+			unsigned char confirm;
+
+			/* Clear help line and show confirmation prompt */
+			fprintf(stderr, "\033[%dA", display_lines);
+			for (i = 0; i < display_lines; i++)
+				fprintf(stderr, "\033[2K\r\n");
+			fprintf(stderr, "\033[%dA", display_lines);
+
+			/* Re-render list */
+			for (i = 0; i < count; i++) {
+				if (i == sel && !entries[i].dead)
+					fprintf(stderr,
+						"\033[7m> %s\033[0m\r\n",
+						entries[i].label);
+				else if (entries[i].dead)
+					fprintf(stderr,
+						"\033[2m  %s\033[0m\r\n",
+						entries[i].label);
+				else
+					fprintf(stderr, "  %s\r\n",
+						entries[i].label);
+			}
+			fprintf(stderr,
+				"\033[33mKill '%s'? (y/N)\033[0m ",
+				entries[sel].name);
+			fflush(stderr);
+
+			if (read(0, &confirm, 1) != 1 ||
+			    (confirm != 'y' && confirm != 'Y')) {
+				/* Cancelled — erase the confirmation line */
+				fprintf(stderr, "\r\033[2K");
+				fprintf(stderr, "\033[%dA", count);
+				continue;
+			}
+
+			/* Show cursor for kill output */
+			fprintf(stderr, "\r\033[2K");
+			tcsetattr(0, TCSADRAIN, &orig);
+			fprintf(stderr, "\033[?25h");
+			fflush(stderr);
+
+			/* Kill the session */
+			{
+				char path[768];
+				snprintf(path, sizeof(path), "%s/%s",
+					 dir, entries[sel].name);
+				sockname = path;
+				if (entries[sel].dead) {
+					/* Dead session: just clean up files */
+					unlink(path);
+					{
+						char assoc[800];
+						snprintf(assoc, sizeof(assoc),
+							 "%s.log", path);
+						unlink(assoc);
+						snprintf(assoc, sizeof(assoc),
+							 "%s.ppid", path);
+						unlink(assoc);
+					}
+				} else {
+					kill_main(0);
+				}
+			}
+
+			/* Re-collect sessions and restart picker */
+			count = collect_sessions(dir, entries,
+						 MAX_SESSIONS);
+			if (count == 0) {
+				if (!quiet)
+					printf("(no sessions)\n");
+				return 0;
+			}
+
+			/* Reset selection */
+			sel = 0;
+			for (i = 0; i < count; i++) {
+				if (!entries[i].dead) {
+					sel = i;
+					break;
+				}
+			}
+
+			/* Re-enter raw mode */
+			tcsetattr(0, TCSADRAIN, &raw);
+			fprintf(stderr, "\033[?25l");
+
+			/* Clear screen area for fresh render */
+			continue;
+		} else if (c == 'r' || c == 'R') {
+			/* Rename: only live sessions */
+			if (entries[sel].dead) {
+				/* Dead sessions cannot be renamed — ignore */
+				fprintf(stderr, "\033[%dA", display_lines);
+				continue;
+			}
+
+			/* Clear and re-render with rename prompt */
+			fprintf(stderr, "\033[%dA", display_lines);
+			for (i = 0; i < display_lines; i++)
+				fprintf(stderr, "\033[2K\r\n");
+			fprintf(stderr, "\033[%dA", display_lines);
+
+			for (i = 0; i < count; i++) {
+				if (i == sel)
+					fprintf(stderr,
+						"\033[7m> %s\033[0m\r\n",
+						entries[i].label);
+				else if (entries[i].dead)
+					fprintf(stderr,
+						"\033[2m  %s\033[0m\r\n",
+						entries[i].label);
+				else
+					fprintf(stderr, "  %s\r\n",
+						entries[i].label);
+			}
+			fprintf(stderr,
+				"\033[33mNew name: \033[0m");
+			fflush(stderr);
+
+			/* Show cursor for input */
+			fprintf(stderr, "\033[?25h");
+
+			{
+				char new_name[256];
+				int nlen;
+				char old_path[768], new_path[768];
+
+				nlen = picker_readline(new_name,
+						       (int)sizeof(new_name));
+
+				/* Hide cursor again */
+				fprintf(stderr, "\033[?25l");
+
+				if (nlen <= 0) {
+					/* Cancelled */
+					fprintf(stderr, "\r\033[2K");
+					fprintf(stderr, "\033[%dA", count);
+					continue;
+				}
+
+				/* Validate: no slashes in name */
+				if (strchr(new_name, '/') != NULL) {
+					fprintf(stderr,
+						"\r\033[2K");
+					fprintf(stderr, "\033[%dA", count);
+					continue;
+				}
+
+				snprintf(old_path, sizeof(old_path),
+					 "%s/%s", dir,
+					 entries[sel].name);
+				snprintf(new_path, sizeof(new_path),
+					 "%s/%s", dir, new_name);
+
+				/* Temporarily restore terminal for rename output */
+				tcsetattr(0, TCSADRAIN, &orig);
+				fprintf(stderr, "\033[?25h");
+				fflush(stderr);
+
+				rename_main(old_path, new_path);
+
+				/* Re-collect sessions */
+				count = collect_sessions(dir, entries,
+							 MAX_SESSIONS);
+				if (count == 0) {
+					if (!quiet)
+						printf("(no sessions)\n");
+					return 0;
+				}
+
+				/* Reset selection */
+				sel = 0;
+				for (i = 0; i < count; i++) {
+					if (!entries[i].dead) {
+						sel = i;
+						break;
+					}
+				}
+
+				/* Re-enter raw mode */
+				tcsetattr(0, TCSADRAIN, &raw);
+				fprintf(stderr, "\033[?25l");
+			}
+			continue;
 		} else if (c == 3) {
 			/* Ctrl-C */
 			break;
 		}
 
 		/* Move cursor up to redraw */
-		fprintf(stderr, "\033[%dA", count);
+		fprintf(stderr, "\033[%dA", display_lines);
 	}
 
 	/* Restore terminal, show cursor */

@@ -81,12 +81,43 @@ omitted and the environment variable \fBATCH_SESSION\fR is set (i.e. the
 command is run from within an atch session), the innermost session in the
 ancestry chain is cleared.
 .TP
-.B atch list
+.B atch list [\fB\-\-no\-picker\fR]
 .br
 Aliases: \fBl\fR, \fBls\fR
 .br
 List all sessions in the default session directory.  Each entry shows the
-session name, age, and whether the socket is alive or stale (\fB[stale]\fR).
+session name, age, and status: \fB[attached]\fR when a client is connected,
+\fB[dead]\fR for orphan sockets with no running master.
+.PP
+.RS
+When standard output is a TTY, an interactive picker is displayed.  Use the
+arrow keys to navigate, Enter to attach to the selected session, \fBk\fR to
+kill it (with y/N confirmation), \fBr\fR to rename it (inline prompt), and
+Escape or Ctrl\-C to quit without attaching.  Dead sessions are shown in dim
+text and cannot be selected for attach or rename.
+.PP
+Use \fB\-\-no\-picker\fR to force plain\-text output even when a TTY is
+present.  When standard output is not a TTY the picker is disabled
+automatically and plain text is printed instead.
+.PP
+Dead sessions encountered during listing are automatically cleaned up: the
+socket, \fB.log\fR, and \fB.ppid\fR files are removed.
+.RE
+.TP
+.B atch clean
+Remove all orphan (dead) sessions from the session directory.  For each
+orphan socket whose master process is no longer running, the socket,
+\fB.log\fR, and \fB.ppid\fR files are deleted.  Prints the name of each
+removed session unless \fB\-q\fR is set.  If no orphans are found, prints a
+message to that effect.
+.TP
+.B atch rename \fIold\fR \fInew\fR
+.br
+Alias: \fBmv\fR
+.br
+Rename a live session from \fIold\fR to \fInew\fR.  The socket, \fB.log\fR,
+and \fB.ppid\fR files are all renamed atomically.  The session must be
+running; dead sessions cannot be renamed.
 .TP
 .B atch current
 Print the name of the current session (read from \fBATCH_SESSION\fR).  When
@@ -160,7 +191,9 @@ Unix domain socket for the named session.
 .I ~/.cache/atch/<session>.log
 Persistent output log for the named session.  The log is trimmed to the cap
 set by \fB\-C\fR (default 1 MiB) every time the limit is reached.  When a
-session ends, an end marker is appended before the file is closed.
+session ends, an end marker is appended before the file is closed.  On
+re\-attach, only the last 128\ KB of the log is replayed (matching the
+in\-memory ring buffer size) to avoid flooding the terminal.
 .PP
 When \fI$HOME\fR is unset or is the root directory, sockets are stored under
 \fI/tmp/.atch-<uid>/\fR instead.
