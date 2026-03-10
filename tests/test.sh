@@ -144,7 +144,7 @@ assert_eq    "list -q: empty → no output"           "" "$out"
 run "$ATCH" list
 assert_exit     "list: shows running session → exits 0"    0 "$rc"
 assert_contains "list: shows session name"                 "s-list" "$out"
-assert_not_contains "list: no [stale] for live session"    "[stale]" "$out"
+assert_not_contains "list: no [dead] for live session"    "[dead]" "$out"
 
 # quiet still shows session data (only suppresses meta-messages)
 run "$ATCH" -q list
@@ -165,6 +165,50 @@ tidy s-list
 run "$ATCH" list
 assert_eq "list: back to empty after kill" "(no sessions)" "$out"
 
+# ── 3b. interactive picker: non-TTY fallback (US-007) ────────────────────────
+#
+# When stdout is NOT a TTY (pipe / script), `atch list` MUST fall back to the
+# plain-text listing.  We verify this by running through a pipe (the `run`
+# helper) and checking:
+#   1. Exit code is 0
+#   2. Session names appear in the output
+#   3. No ANSI cursor-movement escapes are written
+#   4. --no-picker flag also forces plain-text mode
+
+"$ATCH" start picker-live sleep 999
+
+run "$ATCH" list
+assert_exit     "picker fallback: non-tty list exits 0"          0 "$rc"
+assert_contains "picker fallback: live session shown"            "picker-live" "$out"
+
+# No cursor-movement escapes should appear in non-TTY output
+case "$out" in
+    *"["*"A"*|*"["*"B"*|*"["*"H"*|*"["*"J"*)
+        fail "picker fallback: no cursor-movement escapes in non-tty output" \
+             "no ESC[A/B/H/J" "found in output" ;;
+    *)
+        ok "picker fallback: no cursor-movement escapes in non-tty output" ;;
+esac
+
+# --no-picker flag forces plain-text mode
+run "$ATCH" list --no-picker
+assert_exit     "picker --no-picker: exits 0"                    0 "$rc"
+assert_contains "picker --no-picker: live session shown"         "picker-live" "$out"
+
+tidy picker-live
+
+# Stale session listed in non-TTY mode with [stale]
+"$ATCH" run picker-stale sleep 99999 &
+PICKER_STALE_PID=$!
+wait_socket picker-stale
+kill -9 "$PICKER_STALE_PID" 2>/dev/null
+sleep 0.1
+
+run "$ATCH" list
+assert_contains "picker fallback: dead session shows [dead]"   "[dead]" "$out"
+
+rm -f "$HOME/.cache/atch/picker-stale"
+
 # ── 4. stale session ─────────────────────────────────────────────────────────
 # Use 'run' (dontfork master stays in foreground) so we get the master PID
 # directly via $!.  kill -9 leaves the socket file on disk but removes the
@@ -177,7 +221,7 @@ kill -9 "$STALE_MASTER_PID" 2>/dev/null
 sleep 0.1
 
 run "$ATCH" list
-assert_contains "list: stale session shows [stale]" "[stale]" "$out"
+assert_contains "list: dead session shows [dead]" "[dead]" "$out"
 
 # clean up orphaned child and leftover socket
 for p in $(ls /proc | grep -E '^[0-9]+$'); do
@@ -957,6 +1001,125 @@ else
     ok "start-inside: skip (python3 not available)"
     ok "start-inside: skip (python3 not available)"
 fi
+
+# ── 25. auto-cleanup: atch list removes orphan sockets ───────────────────────
+#
+# US-005: When list_main encounters a socket that returns ECONNREFUSED
+# (dead master), it must automatically unlink the socket and its associated
+# .log and .ppid files.
+#
+# Strategy: use 'atch run' so the master runs in the foreground and we have
+# its PID. Kill -9 to leave the socket on disk. Verify list shows [stale],
+# then run list again and verify the socket has been removed.
+
+"$ATCH" run ac-orphan sleep 99999 &
+AC_ORPHAN_PID=$!
+wait_socket ac-orphan
+AC_SOCK="$HOME/.cache/atch/ac-orphan"
+
+# Create a .ppid file so we can verify it gets cleaned too
+printf "99999\n" > "${AC_SOCK}.ppid"
+
+kill -9 "$AC_ORPHAN_PID" 2>/dev/null
+# Also kill the sleep child so it doesn't linger
+sleep 0.2
+
+# First list call: socket is stale, must be listed and then removed
+run "$ATCH" list
+assert_contains "auto-cleanup: list detects orphan before cleanup" \
+    "ac-orphan" "$out"
+
+# After list, the socket file must be gone
+if [ ! -e "$AC_SOCK" ]; then
+    ok "auto-cleanup: list removes orphan socket"
+else
+    fail "auto-cleanup: list removes orphan socket" "socket removed" "socket still present"
+fi
+
+# .log file must be gone too (if it existed)
+if [ ! -e "${AC_SOCK}.log" ]; then
+    ok "auto-cleanup: list removes orphan .log"
+else
+    fail "auto-cleanup: list removes orphan .log" ".log removed" ".log still present"
+fi
+
+# .ppid file must be gone too
+if [ ! -e "${AC_SOCK}.ppid" ]; then
+    ok "auto-cleanup: list removes orphan .ppid"
+else
+    fail "auto-cleanup: list removes orphan .ppid" ".ppid removed" ".ppid still present"
+fi
+
+# Second list call: orphan gone, should no longer appear
+run "$ATCH" list
+assert_not_contains "auto-cleanup: orphan absent from list after cleanup" \
+    "ac-orphan" "$out"
+
+# ── 26. atch clean: explicit cleanup command ──────────────────────────────────
+#
+# 'atch clean' must:
+#   a) remove all orphan sockets (ECONNREFUSED) and their .log/.ppid files
+#   b) NOT remove live sessions
+#   c) exit 0 and print a summary
+
+# Create two orphan sockets by killing masters with -9
+"$ATCH" run clean-orphan1 sleep 99999 &
+CO1_PID=$!
+wait_socket clean-orphan1
+CO1_SOCK="$HOME/.cache/atch/clean-orphan1"
+
+"$ATCH" run clean-orphan2 sleep 99999 &
+CO2_PID=$!
+wait_socket clean-orphan2
+CO2_SOCK="$HOME/.cache/atch/clean-orphan2"
+
+# Start a live session that must survive
+"$ATCH" start clean-live sleep 999
+
+kill -9 "$CO1_PID" 2>/dev/null
+kill -9 "$CO2_PID" 2>/dev/null
+sleep 0.2
+
+# atch clean must exit 0
+run "$ATCH" clean
+assert_exit "clean: exits 0" 0 "$rc"
+
+# Orphan sockets must be gone
+if [ ! -e "$CO1_SOCK" ]; then
+    ok "clean: removes orphan1 socket"
+else
+    fail "clean: removes orphan1 socket" "removed" "still present"
+fi
+
+if [ ! -e "$CO2_SOCK" ]; then
+    ok "clean: removes orphan2 socket"
+else
+    fail "clean: removes orphan2 socket" "removed" "still present"
+fi
+
+# Live session must still be present
+run "$ATCH" list
+assert_contains "clean: live session survives cleanup" "clean-live" "$out"
+assert_not_contains "clean: live session not marked dead" "[dead]" "$out"
+
+tidy clean-live
+
+# atch clean with -q must be silent
+"$ATCH" run clean-quiet-orphan sleep 99999 &
+CQ_PID=$!
+wait_socket clean-quiet-orphan
+kill -9 "$CQ_PID" 2>/dev/null
+sleep 0.2
+
+run "$ATCH" -q clean
+assert_exit "clean -q: exits 0" 0 "$rc"
+assert_eq   "clean -q: no output" "" "$out"
+
+# ── 27. atch clean: no orphans prints message ─────────────────────────────────
+
+run "$ATCH" clean
+assert_exit "clean: no orphans → exits 0" 0 "$rc"
+assert_contains "clean: no orphans → message" "no orphan" "$out"
 
 # ── summary ──────────────────────────────────────────────────────────────────
 

@@ -755,26 +755,46 @@ int kill_main(int force)
 	return 1;
 }
 
-int list_main(void)
+/* Remove an orphan socket and its associated .log and .ppid files. */
+static void remove_orphan(const char *path)
 {
-	char dir[512];
-	char path[768];		/* sizeof(dir) + '/' + NAME_MAX */
+	char assoc[800];
+
+	unlink(path);
+	snprintf(assoc, sizeof(assoc), "%s.log", path);
+	unlink(assoc);
+	snprintf(assoc, sizeof(assoc), "%s.ppid", path);
+	unlink(assoc);
+}
+
+/* Session entry for the picker / list. */
+struct session_entry {
+	char name[256];
+	char label[512];	/* pre-formatted display line */
+	int dead;		/* 1 if orphan (ECONNREFUSED) */
+};
+
+#define MAX_SESSIONS 256
+
+/*
+** Collect all sessions in dir into entries[].  Orphan sockets (dead masters)
+** are auto-cleaned (socket + .log + .ppid removed) and marked dead=1.
+** Returns the number of entries collected.
+*/
+static int collect_sessions(const char *dir, struct session_entry *entries,
+			    int max)
+{
+	char path[768];
 	DIR *d;
 	struct dirent *ent;
 	time_t now = time(NULL);
 	int count = 0;
 
-	get_session_dir(dir, sizeof(dir));
-
 	d = opendir(dir);
-	if (!d) {
-		if (errno == ENOENT)
-			goto empty;
-		printf("%s: %s: %s\n", progname, dir, strerror(errno));
-		return 1;
-	}
+	if (!d)
+		return 0;
 
-	while ((ent = readdir(d)) != NULL) {
+	while ((ent = readdir(d)) != NULL && count < max) {
 		struct stat st;
 		char age[32];
 		int s;
@@ -792,24 +812,232 @@ int list_main(void)
 		if (s >= 0) {
 			int attached = st.st_mode & S_IXUSR;
 			close(s);
+			snprintf(entries[count].name,
+				 sizeof(entries[count].name), "%s",
+				 ent->d_name);
 			if (attached)
-				printf("%-24s since %s ago [attached]\n",
-				       ent->d_name, age);
+				snprintf(entries[count].label,
+					 sizeof(entries[count].label),
+					 "%-24s since %s ago [attached]",
+					 ent->d_name, age);
 			else
-				printf("%-24s since %s ago\n",
-				       ent->d_name, age);
+				snprintf(entries[count].label,
+					 sizeof(entries[count].label),
+					 "%-24s since %s ago",
+					 ent->d_name, age);
+			entries[count].dead = 0;
 			count++;
 		} else if (errno == ECONNREFUSED) {
-			printf("%-24s since %s ago [stale]\n", ent->d_name,
-			       age);
+			snprintf(entries[count].name,
+				 sizeof(entries[count].name), "%s",
+				 ent->d_name);
+			snprintf(entries[count].label,
+				 sizeof(entries[count].label),
+				 "%-24s since %s ago [dead]",
+				 ent->d_name, age);
+			entries[count].dead = 1;
+			remove_orphan(path);
 			count++;
 		}
 	}
 
 	closedir(d);
+	return count;
+}
 
- empty:
-	if (count == 0 && !quiet)
-		printf("(no sessions)\n");
+/*
+** Interactive picker: display sessions with arrow-key navigation.
+** Enter selects a live session (execvp to atch attach <session>).
+** Escape / Ctrl-C exits without attaching.
+** Dead sessions are shown but not selectable.
+** Returns 0 on Escape/Ctrl-C, or does not return on Enter (execvp).
+*/
+static int interactive_picker(struct session_entry *entries, int count)
+{
+	struct termios orig, raw;
+	int sel = 0;
+	int i;
+	unsigned char c;
+
+	/* Skip to the first non-dead session if possible. */
+	for (i = 0; i < count; i++) {
+		if (!entries[i].dead) {
+			sel = i;
+			break;
+		}
+	}
+
+	/* Enter raw mode on stdin (fd 0). */
+	if (tcgetattr(0, &orig) < 0)
+		return 1;
+	raw = orig;
+	raw.c_lflag &= ~(ICANON | ECHO | ISIG);
+	raw.c_cc[VMIN] = 1;
+	raw.c_cc[VTIME] = 0;
+	tcsetattr(0, TCSADRAIN, &raw);
+
+	/* Hide cursor */
+	fprintf(stderr, "\033[?25l");
+
+	for (;;) {
+		/* Render list */
+		for (i = 0; i < count; i++) {
+			if (i == sel && !entries[i].dead)
+				fprintf(stderr, "\033[7m> %s\033[0m\r\n",
+					entries[i].label);
+			else if (entries[i].dead)
+				fprintf(stderr, "\033[2m  %s\033[0m\r\n",
+					entries[i].label);
+			else
+				fprintf(stderr, "  %s\r\n",
+					entries[i].label);
+		}
+
+		/* Read a key */
+		if (read(0, &c, 1) != 1)
+			break;
+
+		if (c == 27) {
+			/* Escape sequence or bare Escape */
+			unsigned char seq[2];
+			if (read(0, &seq[0], 1) == 1 && seq[0] == '[') {
+				if (read(0, &seq[1], 1) == 1) {
+					if (seq[1] == 'A') {
+						/* Up arrow */
+						int j = sel - 1;
+						while (j >= 0 &&
+						       entries[j].dead)
+							j--;
+						if (j >= 0)
+							sel = j;
+					} else if (seq[1] == 'B') {
+						/* Down arrow */
+						int j = sel + 1;
+						while (j < count &&
+						       entries[j].dead)
+							j++;
+						if (j < count)
+							sel = j;
+					}
+				}
+			} else if (seq[0] != '[') {
+				/* Bare Escape key */
+				break;
+			}
+		} else if (c == '\r' || c == '\n') {
+			/* Enter: attach to the selected session */
+			if (!entries[sel].dead) {
+				/* Restore terminal, show cursor */
+				tcsetattr(0, TCSADRAIN, &orig);
+				fprintf(stderr, "\033[?25h");
+				fflush(stderr);
+				/* execvp to atch attach <session> */
+				{
+					char *args[4];
+					args[0] = progname;
+					args[1] = (char *)"attach";
+					args[2] = entries[sel].name;
+					args[3] = NULL;
+					execvp(progname, args);
+				}
+				/* If execvp fails, fall through */
+				perror(progname);
+				return 1;
+			}
+		} else if (c == 3) {
+			/* Ctrl-C */
+			break;
+		}
+
+		/* Move cursor up to redraw */
+		fprintf(stderr, "\033[%dA", count);
+	}
+
+	/* Restore terminal, show cursor */
+	tcsetattr(0, TCSADRAIN, &orig);
+	fprintf(stderr, "\033[?25h");
+	fflush(stderr);
+	return 0;
+}
+
+int list_main(int no_picker)
+{
+	char dir[512];
+	struct session_entry entries[MAX_SESSIONS];
+	int count;
+	int is_tty;
+
+	get_session_dir(dir, sizeof(dir));
+
+	count = collect_sessions(dir, entries, MAX_SESSIONS);
+
+	if (count == 0) {
+		if (!quiet)
+			printf("(no sessions)\n");
+		return 0;
+	}
+
+	is_tty = isatty(STDOUT_FILENO);
+
+	if (is_tty && !no_picker) {
+		return interactive_picker(entries, count);
+	}
+
+	/* Plain text fallback */
+	{
+		int i;
+		for (i = 0; i < count; i++)
+			printf("%s\n", entries[i].label);
+	}
+	return 0;
+}
+
+int clean_main(void)
+{
+	char dir[512];
+	char path[768];
+	DIR *d;
+	struct dirent *ent;
+	int cleaned = 0;
+
+	get_session_dir(dir, sizeof(dir));
+
+	d = opendir(dir);
+	if (!d) {
+		if (errno == ENOENT)
+			goto done;
+		printf("%s: %s: %s\n", progname, dir, strerror(errno));
+		return 1;
+	}
+
+	while ((ent = readdir(d)) != NULL) {
+		struct stat st;
+		int s;
+
+		if (ent->d_name[0] == '.')
+			continue;
+		snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
+		if (stat(path, &st) < 0 || !S_ISSOCK(st.st_mode))
+			continue;
+
+		s = connect_socket(path);
+		if (s >= 0) {
+			close(s);
+			continue;	/* live session — skip */
+		}
+		if (errno == ECONNREFUSED) {
+			if (!quiet)
+				printf("%s: removed orphan '%s'\n",
+				       progname, ent->d_name);
+			remove_orphan(path);
+			cleaned++;
+		}
+	}
+
+	closedir(d);
+
+ done:
+	if (cleaned == 0 && !quiet)
+		printf("%s: no orphan sessions found\n", progname);
 	return 0;
 }

@@ -343,10 +343,29 @@ static int is_cmd(const char *arg, const char *a, const char *b, const char *c)
 	    (b && strcmp(arg, b) == 0) || (c && strcmp(arg, c) == 0);
 }
 
-/* atch list */
-static int cmd_list(void)
+/* atch list [--no-picker] */
+static int cmd_list(int argc, char **argv)
 {
-	return list_main();
+	int no_picker = 0;
+
+	while (argc >= 1) {
+		if (strcmp(argv[0], "--no-picker") == 0) {
+			no_picker = 1;
+			argc--;
+			argv++;
+		} else {
+			printf("%s: list: unknown argument '%s'\n",
+			       progname, argv[0]);
+			return 1;
+		}
+	}
+	return list_main(no_picker);
+}
+
+/* atch clean */
+static int cmd_clean(void)
+{
+	return clean_main();
 }
 
 /* atch current
@@ -599,6 +618,7 @@ static void usage(void)
 	       "  clear   [<session>]"
 	       "\t\t\tTruncate the session log\n"
 	       "  list\t\t\t\t\tList all sessions\n"
+	       "  clean\t\t\t\t\tRemove orphan (dead) sessions\n"
 	       "  current\t\t\t\tPrint current session name\n"
 	       "\n"
 	       "Options:\n"
@@ -670,7 +690,7 @@ int main(int argc, char **argv)
 		if (mode == '?' || mode == 'h')
 			usage();
 		if (mode == 'l')
-			return cmd_list();
+			return cmd_list(argc, argv);
 		if (mode == 'i')
 			return cmd_current();
 		if (mode != 'a' && mode != 'A' && mode != 'c' &&
@@ -770,7 +790,7 @@ int main(int argc, char **argv)
 	--argc;
 
 	if (is_cmd(cmd, "list", "l", "ls"))
-		return cmd_list();
+		return cmd_list(argc, argv);
 	if (is_cmd(cmd, "current", NULL, NULL))
 		return cmd_current();
 	if (is_cmd(cmd, "attach", "a", NULL))
@@ -787,6 +807,8 @@ int main(int argc, char **argv)
 		return cmd_kill(argc, argv);
 	if (is_cmd(cmd, "clear", NULL, NULL))
 		return cmd_clear(argc, argv);
+	if (is_cmd(cmd, "clean", NULL, NULL))
+		return cmd_clean();
 
 	/* Smart default: treat first arg as session name → attach-or-create */
 	return cmd_open((char *)cmd, argc, argv);
