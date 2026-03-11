@@ -1168,7 +1168,7 @@ static int interactive_picker(struct session_entry *entries, int count)
 						unlink(assoc);
 					}
 				} else {
-					kill_main(0);
+					kill_main(1);
 				}
 			}
 

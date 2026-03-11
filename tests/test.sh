@@ -291,6 +291,129 @@ run "$ATCH" kill -f s-noexist-force
 assert_exit     "kill -f: nonexistent → exit 1"      1 "$rc"
 assert_contains "kill -f: nonexistent → message"     "does not exist" "$out"
 
+# kill attached session: simulate a client attached to the session
+# The attached client keeps a socket connection with MSG_ATTACH sent.
+# kill must terminate the session despite the attached client.
+"$ATCH" start s-kill-att sleep 999
+wait_socket s-kill-att
+
+# Simulate an attached client: connect + send MSG_ATTACH packet.
+# struct packet = type(1) + len(1) + union(sizeof(struct winsize)).
+# MSG_ATTACH=1, len=0 → normal ring replay.
+python3 -c "
+import socket, struct, time, sys, os
+ws = 8
+sockpath = os.environ['HOME'] + '/.cache/atch/s-kill-att'
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(sockpath)
+pkt = struct.pack('BB', 1, 0) + b'\x00' * ws
+s.sendall(pkt)
+# keep alive until killed or master closes
+s.setblocking(False)
+for _ in range(200):
+    time.sleep(0.1)
+    try:
+        d = s.recv(4096)
+        if not d: break
+    except BlockingIOError: pass
+s.close()
+" &
+KILL_ATT_CLIENT=$!
+sleep 0.5
+
+# Verify the session shows as attached (S_IXUSR set)
+run "$ATCH" list --no-picker
+assert_contains "kill-att: shows [attached]"         "[attached]" "$out"
+
+# Kill the attached session (non-force)
+run "$ATCH" kill s-kill-att
+assert_exit     "kill-att: exits 0"                  0 "$rc"
+
+# Session must be gone
+run "$ATCH" list --no-picker
+assert_not_contains "kill-att: session gone"         "s-kill-att" "$out"
+
+kill $KILL_ATT_CLIENT 2>/dev/null
+wait $KILL_ATT_CLIENT 2>/dev/null
+
+# kill -f on attached session: must terminate quickly (< 3s)
+"$ATCH" start s-kill-att-f sleep 999
+wait_socket s-kill-att-f
+
+python3 -c "
+import socket, struct, time, sys, os
+ws = 8
+sockpath = os.environ['HOME'] + '/.cache/atch/s-kill-att-f'
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(sockpath)
+pkt = struct.pack('BB', 1, 0) + b'\x00' * ws
+s.sendall(pkt)
+s.setblocking(False)
+for _ in range(200):
+    time.sleep(0.1)
+    try:
+        d = s.recv(4096)
+        if not d: break
+    except BlockingIOError: pass
+s.close()
+" &
+KILL_ATT_F_CLIENT=$!
+sleep 0.5
+
+run "$ATCH" list --no-picker
+assert_contains "kill-att-f: shows [attached]"       "[attached]" "$out"
+
+run "$ATCH" kill -f s-kill-att-f
+assert_exit     "kill-att-f: exits 0"                0 "$rc"
+assert_contains "kill-att-f: prints killed"          "killed" "$out"
+
+run "$ATCH" list --no-picker
+assert_not_contains "kill-att-f: session gone"       "s-kill-att-f" "$out"
+
+kill $KILL_ATT_F_CLIENT 2>/dev/null
+wait $KILL_ATT_F_CLIENT 2>/dev/null
+
+# kill attached session running a SIGTERM-ignoring child.
+# The child traps SIGTERM, so only SIGKILL (escalation) can stop it.
+# kill -f must succeed because it sends SIGKILL directly.
+"$ATCH" start s-kill-trap sh -c 'trap "" TERM; sleep 999'
+wait_socket s-kill-trap
+
+# Attach a client
+python3 -c "
+import socket, struct, time, os
+ws = 8
+sockpath = os.environ['HOME'] + '/.cache/atch/s-kill-trap'
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(sockpath)
+pkt = struct.pack('BB', 1, 0) + b'\x00' * ws
+s.sendall(pkt)
+s.setblocking(False)
+for _ in range(200):
+    time.sleep(0.1)
+    try:
+        d = s.recv(4096)
+        if not d: break
+    except BlockingIOError: pass
+s.close()
+" &
+KILL_TRAP_CLIENT=$!
+sleep 0.5
+
+run "$ATCH" list --no-picker
+assert_contains "kill-trap: shows [attached]"        "[attached]" "$out"
+
+# Force kill must work even though child ignores SIGTERM
+run "$ATCH" kill -f s-kill-trap
+assert_exit     "kill-trap: force exits 0"           0 "$rc"
+assert_contains "kill-trap: prints killed"           "killed" "$out"
+
+run "$ATCH" list --no-picker
+assert_not_contains "kill-trap: session gone"        "s-kill-trap" "$out"
+
+kill $KILL_TRAP_CLIENT 2>/dev/null
+wait $KILL_TRAP_CLIENT 2>/dev/null
+
 # ── 6. clear command ─────────────────────────────────────────────────────────
 
 run "$ATCH" clear

@@ -604,6 +604,13 @@ static void client_activity(struct client *p)
 	else if (pkt.type == MSG_KILL) {
 		int sig = pkt.len ? (int)(unsigned char)pkt.len : SIGTERM;
 		killpty(&the_pty, sig);
+		/* For uncatchable signals (SIGKILL), also target the child
+		 * PID directly.  killpty() sends to the foreground process
+		 * group, which may differ from the shell's own group when
+		 * a foreground job is running.  Killing the child PID
+		 * ensures the session leader (the shell) always dies. */
+		if (sig == SIGKILL)
+			kill(the_pty.pid, SIGKILL);
 	}
 }
 
