@@ -541,7 +541,8 @@ rm -f /tmp/atch-envname.txt
 # binary 'ssh2incus-atch' → env var 'SSH2INCUS_ATCH_SESSION'
 DASH_ATCH="$TESTDIR/bin/ssh2incus-atch"
 mkdir -p "$TESTDIR/bin"
-ln -s "$ATCH" "$DASH_ATCH" 2>/dev/null || cp "$ATCH" "$DASH_ATCH"
+ATCH_ABS=$(cd "$(dirname "$ATCH")" && pwd)/$(basename "$ATCH")
+ln -sf "$ATCH_ABS" "$DASH_ATCH" 2>/dev/null || cp "$ATCH" "$DASH_ATCH"
 "$DASH_ATCH" start envdash-test sh -c \
     'printf "%s\n" "$SSH2INCUS_ATCH_SESSION" > /tmp/atch-envdash.txt'
 sleep 0.1
@@ -1583,13 +1584,20 @@ send "\x1b"
 expect eof
 EXPECT_EOF
 
-    # One session was killed (the one the picker selected — first live
-    # in readdir order). The other should remain.
+    # One session was killed (the one the picker selected — depends on
+    # readdir order, which varies across filesystems). The other should remain.
     run "$ATCH" list --no-picker
     SESSION_COUNT=$(echo "$out" | grep -c "pk-live" || true)
     if [ "$SESSION_COUNT" -eq 1 ]; then
         ok "picker-kill: k+y → exactly one session killed"
-        ok "picker-kill: k+y → surviving session still present"
+        # Verify the survivor is one of our two sessions (order-independent)
+        case "$out" in
+            *pk-live1*|*pk-live2*)
+                ok "picker-kill: k+y → surviving session still present" ;;
+            *)
+                fail "picker-kill: k+y → surviving session still present" \
+                     "pk-live1 or pk-live2 in list" "$out" ;;
+        esac
     elif [ "$SESSION_COUNT" -eq 0 ]; then
         fail "picker-kill: k+y → exactly one session killed" "1 session" "0 sessions"
         fail "picker-kill: k+y → surviving session still present" "1 session" "0 sessions"
