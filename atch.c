@@ -359,6 +359,10 @@ static int cmd_list(int argc, char **argv)
 			return 1;
 		}
 	}
+	/* Snapshot terminal settings so that master_main (called from the
+	 * picker's 'n' key handler) initializes the PTY with real terminal
+	 * parameters instead of the zeroed global orig_term. */
+	save_term();
 	return list_main(no_picker);
 }
 

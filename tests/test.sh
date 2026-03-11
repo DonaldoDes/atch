@@ -414,6 +414,38 @@ assert_not_contains "kill-trap: session gone"        "s-kill-trap" "$out"
 kill $KILL_TRAP_CLIENT 2>/dev/null
 wait $KILL_TRAP_CLIENT 2>/dev/null
 
+# kill -f must not kill the calling process (regression: kill(0, SIGKILL)).
+# When the master receives MSG_KILL with SIGKILL, it must only kill the PTY
+# child — not the caller's process group.  We run kill -f from a subshell
+# and verify the subshell itself survives.
+"$ATCH" start s-kill-caller sleep 999
+wait_socket s-kill-caller
+
+# Run kill -f in a subshell that writes a sentinel AFTER the kill returns.
+# If the caller's process group gets SIGKILL'd, the sentinel is never written.
+SENTINEL="$TESTDIR/kill-caller-survived"
+rm -f "$SENTINEL"
+( "$ATCH" kill -f s-kill-caller >/dev/null 2>&1; echo ok > "$SENTINEL" ) &
+KILLER_PID=$!
+
+# Wait for the subshell to finish (up to 10s)
+i=0
+while [ $i -lt 100 ] && kill -0 "$KILLER_PID" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+done
+wait "$KILLER_PID" 2>/dev/null
+
+if [ -f "$SENTINEL" ]; then
+    ok "kill -f: caller process survives"
+else
+    fail "kill -f: caller process survives" "sentinel file written" "not found (caller was killed)"
+fi
+
+# Session must be gone
+run "$ATCH" list --no-picker
+assert_not_contains "kill -f caller: session gone" "s-kill-caller" "$out"
+
 # ── 6. clear command ─────────────────────────────────────────────────────────
 
 run "$ATCH" clear
@@ -1392,9 +1424,58 @@ EXPECT_EOF
     else
         fail "picker-new: n + name creates session" "pn-created in list" "$out"
     fi
+
+    # 29b-bis. session created via picker n must NOT show [attached]
+    run "$ATCH" list --no-picker
+    CREATED_LINE=$(echo "$out" | grep "pn-created")
+    case "$CREATED_LINE" in
+        *"[attached]"*)
+            fail "picker-new: created session is not [attached]" \
+                 "no [attached]" "$CREATED_LINE" ;;
+        *)
+            ok "picker-new: created session is not [attached]" ;;
+    esac
+
     rm -f "$PICKER_OUT"
     tidy pn-exist
     tidy pn-created
+
+    # 29b-ter. session created via picker n has correct PTY baud rate
+    # When save_term() is not called before master_main in the picker flow,
+    # orig_term is all-zeros, including c_ispeed/c_ospeed = 0 (B0 = hangup).
+    # A properly initialized PTY should have a non-zero baud rate (B38400+).
+    # We detect this by running stty inside the picker-created session.
+    "$ATCH" start pn-pty-seed sleep 999
+    wait_socket pn-pty-seed
+
+    PICKER_OUT=$(mktemp)
+    expect - << 'EXPECT_EOF' > "$PICKER_OUT" 2>&1
+set timeout 5
+spawn sh -c "exec $env(ATCH) list 2>&1"
+sleep 0.5
+send "n"
+sleep 0.5
+send "pn-pty-test\r"
+sleep 1
+send "\x1b"
+expect eof
+EXPECT_EOF
+
+    wait_socket pn-pty-test
+    # Push "stty speed" into the session and read the baud rate from log
+    printf "stty speed > /tmp/atch-pty-speed-test 2>&1\n" | "$ATCH" push pn-pty-test
+    sleep 1
+    SPEED=$(cat /tmp/atch-pty-speed-test 2>/dev/null | tr -d '[:space:]')
+    rm -f /tmp/atch-pty-speed-test
+    if [ -n "$SPEED" ] && [ "$SPEED" != "0" ]; then
+        ok "picker-new: PTY has valid baud rate (orig_term initialized)"
+    else
+        fail "picker-new: PTY has valid baud rate (orig_term initialized)" \
+             "non-zero speed" "speed=$SPEED"
+    fi
+    rm -f "$PICKER_OUT"
+    tidy pn-pty-seed
+    tidy pn-pty-test
 
     # 29c. n + empty name (just Enter) → no session created
     "$ATCH" start pn-empty sleep 999
@@ -1457,6 +1538,8 @@ EXPECT_EOF
     tidy pn-esc
 
 else
+    ok "picker-new: skip (expect not available)"
+    ok "picker-new: skip (expect not available)"
     ok "picker-new: skip (expect not available)"
     ok "picker-new: skip (expect not available)"
     ok "picker-new: skip (expect not available)"
