@@ -4,6 +4,7 @@
 # Runs entirely in /tmp so it never touches real session state.
 
 ATCH="${1:-./atch}"
+export ATCH
 
 # ── test framework ──────────────────────────────────────────────────────────
 
@@ -1365,14 +1366,16 @@ assert_contains "rename: no args → message"             "No session was specif
 run "$ATCH" rename rn-onearg
 assert_exit     "rename: one arg → exit 1"              1 "$rc"
 
-# ── 29. picker n=new: create session from interactive picker ──────────────────
+# ── 29. picker n=new: create session and attach immediately ───────────────────
 #
 # US-009: pressing 'n' in the interactive picker must:
 #   a) show an inline prompt "New session name: "
-#   b) create the session via start, then refresh the picker
+#   b) create the session AND attach immediately (execvp to atch attach)
 #   c) empty name → ignored, return to picker
 #   d) Escape → cancel, return to picker
 #   e) help banner includes n=new
+#   f) session shows [attached] while expect holds the attach
+#   g) after detach, session exists and is detached
 #
 # Strategy: use expect(1) to drive the picker with a real PTY.
 # Test requires at least one existing session so the picker is shown.
@@ -1400,7 +1403,10 @@ EXPECT_EOF
     rm -f "$BANNER_OUT"
     tidy pn-banner
 
-    # 29b. n + session name → session created and appears in list
+    # 29b. n + session name → session created AND attached immediately
+    # After pressing n and entering a name, the picker should execvp to
+    # atch attach, so we land inside the session. Send detach char (^\)
+    # to exit the attach cleanly.
     "$ATCH" start pn-exist sleep 999
     wait_socket pn-exist
 
@@ -1412,29 +1418,30 @@ sleep 0.5
 send "n"
 sleep 0.5
 send "pn-created\r"
-sleep 1
-send "\x1b"
+# After session creation, picker should execvp to atch attach.
+# Wait for the attach to settle, then detach with ^\ (0x1c).
+sleep 1.5
+send "\x1c"
 expect eof
 EXPECT_EOF
 
     # Verify the session was actually created
-    run "$ATCH" list
+    run "$ATCH" list --no-picker
     if echo "$out" | grep -q "pn-created"; then
         ok "picker-new: n + name creates session"
     else
         fail "picker-new: n + name creates session" "pn-created in list" "$out"
     fi
 
-    # 29b-bis. session created via picker n must NOT show [attached]
-    run "$ATCH" list --no-picker
-    CREATED_LINE=$(echo "$out" | grep "pn-created")
-    case "$CREATED_LINE" in
-        *"[attached]"*)
-            fail "picker-new: created session is not [attached]" \
-                 "no [attached]" "$CREATED_LINE" ;;
-        *)
-            ok "picker-new: created session is not [attached]" ;;
-    esac
+    # 29b-bis. picker output should contain "detached" message (proof of attach)
+    # When execvp replaces picker with atch attach, and we send ^\, the
+    # detach message "[atch: session 'pn-created' detached ...]" is printed.
+    if grep -q "detached" "$PICKER_OUT"; then
+        ok "picker-new: n attaches immediately (detach message seen)"
+    else
+        fail "picker-new: n attaches immediately (detach message seen)" \
+             "detached in output" "$(cat "$PICKER_OUT")"
+    fi
 
     rm -f "$PICKER_OUT"
     tidy pn-exist
@@ -1456,8 +1463,9 @@ sleep 0.5
 send "n"
 sleep 0.5
 send "pn-pty-test\r"
-sleep 1
-send "\x1b"
+# Picker now attaches immediately — detach with ^\ after settling
+sleep 1.5
+send "\x1c"
 expect eof
 EXPECT_EOF
 

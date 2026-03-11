@@ -1375,29 +1375,21 @@ static int interactive_picker(struct session_entry *entries, int count)
 
 				master_main(shell_argv, 0, 0);
 
-				/* Re-collect sessions */
-				count = collect_sessions(dir, entries,
-							 MAX_SESSIONS);
-				if (count == 0) {
-					if (!quiet)
-						printf("(no sessions)\n");
-					return 0;
+				/* Attach immediately: execvp replaces
+				 * the picker process with atch attach,
+				 * same as the Enter handler. */
+				{
+					char *args[4];
+					args[0] = progname;
+					args[1] = (char *)"attach";
+					args[2] = new_name;
+					args[3] = NULL;
+					execvp(progname, args);
 				}
-
-				/* Reset selection */
-				sel = 0;
-				for (i = 0; i < count; i++) {
-					if (!entries[i].dead) {
-						sel = i;
-						break;
-					}
-				}
-
-				/* Re-enter raw mode */
-				tcsetattr(0, TCSADRAIN, &raw);
-				fprintf(stderr, "\033[?25l");
+				/* If execvp fails, fall through */
+				perror(progname);
+				return 1;
 			}
-			continue;
 		} else if (c == 3) {
 			/* Ctrl-C */
 			break;
