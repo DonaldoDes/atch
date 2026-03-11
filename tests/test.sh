@@ -2249,6 +2249,100 @@ else
     ok "picker-exit: skip (expect not available)"
 fi
 
+# ── 35. picker execvp with non-PATH argv[0] ─────────────────────────────────
+#
+# When atch is invoked via a path whose dirname is NOT in $PATH, the picker's
+# Enter and n handlers must still successfully re-exec into "atch attach".
+#
+# Strategy: copy (not symlink) the real binary into a temp dir that is NOT in
+# PATH, rename it to "atch" so session_dir stays consistent, then invoke it
+# via absolute path. The binary's argv[0] will be "/tmp/xxx/atch" — an
+# absolute path that works for the first exec, but a bare progname-based
+# execvp("atch", ...) will fail because /tmp/xxx is not in PATH.
+#
+# With the fix (resolve_exe_path), the picker resolves the real executable
+# path at startup, so re-exec always works.
+
+if command -v expect >/dev/null 2>&1; then
+
+    # 35a. Enter via non-PATH directory → still attaches
+    FAKE_DIR=$(mktemp -d)
+    cp "$ATCH" "$FAKE_DIR/atch"
+    chmod +x "$FAKE_DIR/atch"
+
+    # Create a session using the copy (so session dir matches)
+    "$FAKE_DIR/atch" start pxe-live sleep 999
+    # Wait for socket in the copy's session dir
+    i=0; while [ $i -lt 20 ]; do
+        [ -S "$HOME/.cache/atch/pxe-live" ] && break
+        sleep 0.05; i=$((i + 1))
+    done
+
+    # Use exec -a to set argv[0] to bare "atch" while running the binary
+    # from FAKE_DIR. Strip FAKE_DIR from PATH so execvp("atch") fails.
+    PICKER_OUT=$(mktemp)
+    expect - << EXPECT_EOF > "$PICKER_OUT" 2>&1
+set timeout 5
+set env(PATH) "/usr/bin:/bin"
+spawn sh -c "exec -a atch $FAKE_DIR/atch list 2>&1"
+sleep 0.5
+send "\r"
+sleep 1.5
+send "\x1c"
+expect eof
+EXPECT_EOF
+
+    if grep -q "detached" "$PICKER_OUT"; then
+        ok "picker-execvp: Enter via non-PATH dir → attach works"
+    else
+        fail "picker-execvp: Enter via non-PATH dir → attach works" \
+             "detached in output" "$(cat "$PICKER_OUT")"
+    fi
+    rm -f "$PICKER_OUT"
+    "$FAKE_DIR/atch" kill pxe-live >/dev/null 2>&1; sleep 0.05
+    rm -rf "$FAKE_DIR"
+
+    # 35b. n via non-PATH directory → creates and attaches
+    FAKE_DIR=$(mktemp -d)
+    cp "$ATCH" "$FAKE_DIR/atch"
+    chmod +x "$FAKE_DIR/atch"
+
+    "$FAKE_DIR/atch" start pxe-exist sleep 999
+    i=0; while [ $i -lt 20 ]; do
+        [ -S "$HOME/.cache/atch/pxe-exist" ] && break
+        sleep 0.05; i=$((i + 1))
+    done
+
+    PICKER_OUT=$(mktemp)
+    expect - << EXPECT_EOF > "$PICKER_OUT" 2>&1
+set timeout 5
+set env(PATH) "/usr/bin:/bin"
+spawn sh -c "exec -a atch $FAKE_DIR/atch list 2>&1"
+sleep 0.5
+send "n"
+sleep 0.5
+send "pxe-newsess\r"
+sleep 1.5
+send "\x1c"
+expect eof
+EXPECT_EOF
+
+    if grep -q "detached" "$PICKER_OUT"; then
+        ok "picker-execvp: n via non-PATH dir → create+attach works"
+    else
+        fail "picker-execvp: n via non-PATH dir → create+attach works" \
+             "detached in output" "$(cat "$PICKER_OUT")"
+    fi
+    rm -f "$PICKER_OUT"
+    "$FAKE_DIR/atch" kill pxe-exist >/dev/null 2>&1; sleep 0.05
+    "$FAKE_DIR/atch" kill pxe-newsess >/dev/null 2>&1; sleep 0.05
+    rm -rf "$FAKE_DIR"
+
+else
+    ok "picker-execvp: skip (expect not available)"
+    ok "picker-execvp: skip (expect not available)"
+fi
+
 # ── summary ──────────────────────────────────────────────────────────────────
 
 printf "\n1..%d\n" "$T"

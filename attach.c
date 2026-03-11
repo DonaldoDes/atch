@@ -1148,14 +1148,14 @@ static int interactive_picker(struct session_entry *entries, int count)
 				/* execvp to atch attach <session> */
 				{
 					char *args[4];
-					args[0] = progname;
+					args[0] = exe_path;
 					args[1] = (char *)"attach";
 					args[2] = entries[sel].name;
 					args[3] = NULL;
-					execvp(progname, args);
+					execvp(exe_path, args);
 				}
 				/* If execvp fails, fall through */
-				perror(progname);
+				fprintf(stderr, "%s: re-exec failed: %s\n", exe_path, strerror(errno));
 				return 1;
 			}
 		} else if (c == 'k' || c == 'K') {
@@ -1434,14 +1434,14 @@ static int interactive_picker(struct session_entry *entries, int count)
 				 * same as the Enter handler. */
 				{
 					char *args[4];
-					args[0] = progname;
+					args[0] = exe_path;
 					args[1] = (char *)"attach";
 					args[2] = new_name;
 					args[3] = NULL;
-					execvp(progname, args);
+					execvp(exe_path, args);
 				}
 				/* If execvp fails, fall through */
-				perror(progname);
+				fprintf(stderr, "%s: re-exec failed: %s\n", exe_path, strerror(errno));
 				return 1;
 			}
 		} else if (c == 3) {

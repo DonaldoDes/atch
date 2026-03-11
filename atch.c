@@ -26,6 +26,48 @@ static void init_envvar_names(void)
 	session_envvar = envname;
 }
 
+/*
+** Resolve the absolute path of the running executable.
+** On macOS: _NSGetExecutablePath + realpath.
+** On Linux: readlink /proc/self/exe.
+** Falls back to progname if resolution fails.
+** Must be called after progname is set.
+*/
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
+
+static void resolve_exe_path(void)
+{
+	char buf[4096];
+	char *resolved;
+
+#ifdef __APPLE__
+	{
+		uint32_t size = sizeof(buf);
+		if (_NSGetExecutablePath(buf, &size) == 0) {
+			resolved = realpath(buf, NULL);
+			if (resolved) {
+				exe_path = resolved;
+				return;
+			}
+		}
+	}
+#else
+	{
+		ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+		if (len > 0) {
+			buf[len] = '\0';
+			exe_path = strdup(buf);
+			if (exe_path)
+				return;
+		}
+	}
+#endif
+	/* Fallback: use progname as-is */
+	exe_path = progname;
+}
+
 /* Returns the basename of the current session socket path. */
 const char *session_shortname(void)
 {
@@ -86,6 +128,9 @@ int socket_with_chdir(char *path, int (*fn)(char *))
 
 /* argv[0] from the program */
 char *progname;
+/* Resolved absolute path of the running executable, used for re-exec.
+** Falls back to progname if resolution fails. */
+char *exe_path;
 /* The name of the passed in socket. */
 char *sockname;
 /* The character used for detaching. Defaults to '^\' */
@@ -685,6 +730,7 @@ int main(int argc, char **argv)
 
 	progname = argv[0];
 	init_envvar_names();
+	resolve_exe_path();
 	++argv;
 	--argc;
 

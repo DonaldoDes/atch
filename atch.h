@@ -69,7 +69,7 @@
 #define S_ISSOCK(m) (((m) & S_IFMT) == S_IFSOCK)
 #endif
 
-extern char *progname, *sockname;
+extern char *progname, *sockname, *exe_path;
 extern int detach_char, no_suspend, redraw_method, clear_method, no_ansiterm, quiet;
 extern size_t log_max_size;
 extern struct termios orig_term;
