@@ -1546,6 +1546,72 @@ EXPECT_EOF
     rm -f "$PICKER_OUT"
     tidy pn-esc
 
+    # 29f. n from inside a session → previous session detaches
+    # When ATCH_SESSION is set (simulating being inside s1), picker n
+    # to create+attach s2 must first send MSG_DETACH to s1 so it
+    # becomes [detached].
+    "$ATCH" start pn-src sleep 999
+    wait_socket pn-src
+
+    PN_SRC_SOCK="$HOME/.cache/atch/pn-src"
+
+    # Hold pn-src attached using expect in background (long sleep, then detach)
+    expect - << 'EXPECT_EOF' > /dev/null 2>&1 &
+set timeout 25
+spawn sh -c "exec $env(ATCH) attach pn-src 2>&1"
+sleep 20
+send "\x1c"
+expect eof
+EXPECT_EOF
+    BGATTACH_PID=$!
+    sleep 3
+
+    # Verify pn-src is [attached] before the test
+    run "$ATCH" list --no-picker
+    case "$out" in
+        *pn-src*attached*)
+            ok "picker-new-detach: pn-src is [attached] before switch" ;;
+        *)
+            fail "picker-new-detach: pn-src is [attached] before switch" \
+                 "[attached]" "$out" ;;
+    esac
+
+    # Simulate being inside pn-src: set ATCH_SESSION and use picker n
+    PICKER_OUT=$(mktemp)
+    expect - << EXPECT_EOF > "$PICKER_OUT" 2>&1
+set timeout 5
+set env(ATCH_SESSION) "$PN_SRC_SOCK"
+spawn sh -c "exec \$env(ATCH) list 2>&1"
+sleep 0.5
+send "n"
+sleep 0.5
+send "pn-switched\r"
+sleep 1.5
+send "\x1c"
+expect eof
+EXPECT_EOF
+    sleep 1
+
+    # After the picker created+attached pn-switched, pn-src should be [detached]
+    # because the picker sent MSG_DETACH to pn-src before execvp.
+    run "$ATCH" list --no-picker
+    case "$out" in
+        *pn-src*attached*)
+            fail "picker-new-detach: pn-src detached after n switch" \
+                 "pn-src not [attached]" "$out" ;;
+        *pn-src*)
+            ok "picker-new-detach: pn-src detached after n switch" ;;
+        *)
+            fail "picker-new-detach: pn-src detached after n switch" \
+                 "pn-src in list" "$out" ;;
+    esac
+
+    rm -f "$PICKER_OUT"
+    kill "$BGATTACH_PID" 2>/dev/null
+    wait "$BGATTACH_PID" 2>/dev/null
+    tidy pn-src
+    tidy pn-switched
+
 else
     ok "picker-new: skip (expect not available)"
     ok "picker-new: skip (expect not available)"
@@ -1553,6 +1619,8 @@ else
     ok "picker-new: skip (expect not available)"
     ok "picker-new: skip (expect not available)"
     ok "picker-new: skip (expect not available)"
+    ok "picker-new-detach: skip (expect not available)"
+    ok "picker-new-detach: skip (expect not available)"
 fi
 
 # ── 30. picker k=kill ────────────────────────────────────────────────────────
@@ -1941,9 +2009,80 @@ EXPECT_EOF
     # Clean up dead session files
     rm -f "$HOME/.cache/atch/pe-dead" "$HOME/.cache/atch/pe-dead.log" "$HOME/.cache/atch/pe-dead.ppid"
 
+    # 32c. Enter from inside a session → previous session detaches
+    # When ATCH_SESSION is set (simulating being inside s1), picker Enter
+    # to attach s2 must first send MSG_DETACH to s1 so it becomes [detached].
+    "$ATCH" start pe-src sleep 999
+    "$ATCH" start pe-dst sleep 999
+    wait_socket pe-src
+    wait_socket pe-dst
+
+    PE_SRC_SOCK="$HOME/.cache/atch/pe-src"
+
+    # Hold pe-src attached using expect in background (long sleep, then detach)
+    expect - << 'EXPECT_EOF' > /dev/null 2>&1 &
+set timeout 25
+spawn sh -c "exec $env(ATCH) attach pe-src 2>&1"
+sleep 20
+send "\x1c"
+expect eof
+EXPECT_EOF
+    BGATTACH_PID=$!
+    sleep 3
+
+    # Verify pe-src is [attached] before the test
+    run "$ATCH" list --no-picker
+    case "$out" in
+        *pe-src*attached*)
+            ok "picker-enter-detach: pe-src is [attached] before switch" ;;
+        *)
+            fail "picker-enter-detach: pe-src is [attached] before switch" \
+                 "[attached]" "$out" ;;
+    esac
+
+    # Simulate being inside pe-src: set ATCH_SESSION and use picker to
+    # select pe-dst via Enter. The picker should detach pe-src first.
+    PICKER_OUT=$(mktemp)
+    expect - << EXPECT_EOF > "$PICKER_OUT" 2>&1
+set timeout 5
+set env(ATCH_SESSION) "$PE_SRC_SOCK"
+spawn sh -c "exec \$env(ATCH) list 2>&1"
+sleep 0.5
+# Navigate to pe-dst (may need Down arrow depending on order)
+send "\x1b\[B"
+sleep 0.3
+send "\r"
+sleep 1.5
+send "\x1c"
+expect eof
+EXPECT_EOF
+    sleep 1
+
+    # After the picker switched to pe-dst, pe-src should be [detached]
+    # because the picker sent MSG_DETACH before execvp.
+    run "$ATCH" list --no-picker
+    case "$out" in
+        *pe-src*attached*)
+            fail "picker-enter-detach: pe-src detached after Enter switch" \
+                 "pe-src not [attached]" "$out" ;;
+        *pe-src*)
+            ok "picker-enter-detach: pe-src detached after Enter switch" ;;
+        *)
+            fail "picker-enter-detach: pe-src detached after Enter switch" \
+                 "pe-src in list" "$out" ;;
+    esac
+
+    rm -f "$PICKER_OUT"
+    kill "$BGATTACH_PID" 2>/dev/null
+    wait "$BGATTACH_PID" 2>/dev/null
+    tidy pe-src
+    tidy pe-dst
+
 else
     ok "picker-enter: skip (expect not available)"
     ok "picker-enter: skip (expect not available)"
+    ok "picker-enter-detach: skip (expect not available)"
+    ok "picker-enter-detach: skip (expect not available)"
 fi
 
 # ── 33. picker navigation ────────────────────────────────────────────────────

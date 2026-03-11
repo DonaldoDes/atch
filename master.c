@@ -562,6 +562,13 @@ static void client_activity(struct client *p)
 			replay_start(p);
 	} else if (pkt.type == MSG_DETACH)
 		p->attached = 0;
+	else if (pkt.type == MSG_DETACH_ALL) {
+		/* Detach every connected client. Used by the picker to
+		 * release the current session before switching. */
+		struct client *c;
+		for (c = clients; c; c = c->next)
+			c->attached = 0;
+	}
 
 	/* Window size change request, without a forced redraw. */
 	else if (pkt.type == MSG_WINCH) {

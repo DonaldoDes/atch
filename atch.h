@@ -87,6 +87,7 @@ enum
 	MSG_WINCH	= 3,
 	MSG_REDRAW	= 4,
 	MSG_KILL	= 5,
+	MSG_DETACH_ALL	= 6,
 };
 
 enum

@@ -996,6 +996,56 @@ static int picker_readline(char *buf, int size)
 }
 
 /*
+** Send MSG_DETACH to the session at 'sock_path' so the master clears
+** S_IXUSR immediately.  Used by the picker to detach the current session
+** before execvp-ing into a new one.
+** Best-effort: errors are silently ignored (the session may have died).
+*/
+static void send_detach_to(const char *sock_path)
+{
+	int s;
+	struct sockaddr_un sockun;
+	struct packet pkt;
+
+	if (!sock_path || !*sock_path)
+		return;
+	if (strlen(sock_path) > sizeof(sockun.sun_path) - 1)
+		return;
+
+	s = socket(PF_UNIX, SOCK_STREAM, 0);
+	if (s < 0)
+		return;
+	sockun.sun_family = AF_UNIX;
+	memcpy(sockun.sun_path, sock_path, strlen(sock_path) + 1);
+	if (connect(s, (struct sockaddr *)&sockun, sizeof(sockun)) < 0) {
+		close(s);
+		return;
+	}
+
+	memset(&pkt, 0, sizeof(pkt));
+	pkt.type = MSG_DETACH_ALL;
+	(void)write(s, &pkt, sizeof(pkt));
+	close(s);
+}
+
+/*
+** If the picker is running inside a session (ATCH_SESSION set), extract
+** the innermost (last) socket path from the colon-separated chain and
+** send MSG_DETACH to it.  This ensures the old session transitions to
+** [detached] before we execvp into the new one.
+*/
+static void detach_current_session(void)
+{
+	const char *chain = getenv(SESSION_ENVVAR);
+	const char *last;
+
+	if (!chain || !*chain)
+		return;
+	last = strrchr(chain, ':');
+	send_detach_to(last ? last + 1 : chain);
+}
+
+/*
 ** Interactive picker: display sessions with arrow-key navigation.
 ** Enter selects a live session (execvp to atch attach <session>).
 ** k = kill selected session (with y/N confirmation).
@@ -1093,6 +1143,8 @@ static int interactive_picker(struct session_entry *entries, int count)
 				tcsetattr(0, TCSADRAIN, &orig);
 				fprintf(stderr, "\033[?25h");
 				fflush(stderr);
+				/* Detach from current session before switching */
+				detach_current_session();
 				/* execvp to atch attach <session> */
 				{
 					char *args[4];
@@ -1375,6 +1427,8 @@ static int interactive_picker(struct session_entry *entries, int count)
 
 				master_main(shell_argv, 0, 0);
 
+				/* Detach from current session before switching */
+				detach_current_session();
 				/* Attach immediately: execvp replaces
 				 * the picker process with atch attach,
 				 * same as the Enter handler. */
