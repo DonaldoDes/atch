@@ -36,6 +36,8 @@ struct client {
 static struct client *clients;
 /* The pseudo-terminal created for the child process. */
 static struct pty the_pty;
+/* Set to 1 by MSG_KILL handler to break out of the event loop. */
+static int should_exit;
 
 /* Persistent session log */
 static int log_fd = -1;
@@ -229,10 +231,14 @@ static int init_pty(char **argv, int statusfd)
 	return 0;
 }
 
-/* Send a signal to the slave side of a pseudo-terminal. */
+/* Send a signal to the slave side of a pseudo-terminal.
+** Guards against pgid == 0 or pgid == our own process group, which
+** would kill the caller (e.g. the picker process that spawned the
+** session via master_main in-process). */
 static void killpty(struct pty *pty, int sig)
 {
 	pid_t pgrp = -1;
+	pid_t my_pgrp = getpgrp();
 
 #ifdef TIOCSIGNAL
 	if (ioctl(pty->fd, TIOCSIGNAL, sig) >= 0)
@@ -245,16 +251,20 @@ static void killpty(struct pty *pty, int sig)
 #ifdef TIOCGPGRP
 #ifdef BROKEN_MASTER
 	if (ioctl(pty->slave, TIOCGPGRP, &pgrp) >= 0 && pgrp != -1 &&
+	    pgrp != my_pgrp && pgrp > 0 &&
 	    kill(-pgrp, sig) >= 0)
 		return;
 #endif
 	if (ioctl(pty->fd, TIOCGPGRP, &pgrp) >= 0 && pgrp != -1 &&
+	    pgrp != my_pgrp && pgrp > 0 &&
 	    kill(-pgrp, sig) >= 0)
 		return;
 #endif
 
-	/* Fallback using the child's pid. */
-	kill(-pty->pid, sig);
+	/* Fallback: send directly to the child PID, not its process
+	 * group, to avoid killing ourselves if pgid is unsafe. */
+	if (pty->pid > 0)
+		kill(pty->pid, sig);
 }
 
 /* Creates a new unix domain socket. */
@@ -607,10 +617,25 @@ static void client_activity(struct client *p)
 		}
 	}
 
-	/* Send a signal to the child process. */
+	/* Send a signal to the child process, then disconnect all clients
+	 * so the master's event loop can exit. */
 	else if (pkt.type == MSG_KILL) {
 		int sig = pkt.len ? (int)(unsigned char)pkt.len : SIGTERM;
+		struct client *c, *cnext;
+
 		killpty(&the_pty, sig);
+
+		/* Close every client fd so the master no longer waits
+		 * for client activity and can exit its loop. */
+		for (c = clients; c; c = cnext) {
+			cnext = c->next;
+			close(c->fd);
+			if (c->next)
+				c->next->pprev = c->pprev;
+			*(c->pprev) = c->next;
+			free(c);
+		}
+		should_exit = 1;
 	}
 }
 
@@ -673,8 +698,8 @@ static void master_process(int s, char **argv, int waitattach, int statusfd)
 	if (nullfd > 2)
 		close(nullfd);
 
-	/* Loop forever. */
-	while (1) {
+	/* Loop until the pty child exits or a kill request is received. */
+	while (!should_exit) {
 		int new_has_attached_client = 0;
 
 		/* Re-initialize the file descriptor sets for select. */

@@ -1063,8 +1063,20 @@ static int interactive_picker(struct session_entry *entries, int count)
 	char dir[512];
 	/* +1 for help banner line */
 	int display_lines;
+	/* Socket path of the current session (from ATCH_SESSION env var) */
+	const char *current_sock = NULL;
+	const char *atch_chain;
 
 	get_session_dir(dir, sizeof(dir));
+
+	/* Resolve the current session socket path for the '*' marker.
+	 * ATCH_SESSION is a colon-separated chain; the last entry is
+	 * the innermost (current) session. */
+	atch_chain = getenv(SESSION_ENVVAR);
+	if (atch_chain && *atch_chain) {
+		const char *last = strrchr(atch_chain, ':');
+		current_sock = last ? last + 1 : atch_chain;
+	}
 
 	/* Skip to the first non-dead session if possible. */
 	for (i = 0; i < count; i++) {
@@ -1089,14 +1101,26 @@ static int interactive_picker(struct session_entry *entries, int count)
 	for (;;) {
 		/* Render list */
 		for (i = 0; i < count; i++) {
+			/* Check if this entry is the current session */
+			const char *cur_base = NULL;
+			int is_current = 0;
+			if (current_sock) {
+				cur_base = strrchr(current_sock, '/');
+				cur_base = cur_base ? cur_base + 1 : current_sock;
+				if (strcmp(cur_base, entries[i].name) == 0)
+					is_current = 1;
+			}
 			if (i == sel && !entries[i].dead)
-				fprintf(stderr, "\033[7m> %s\033[0m\r\n",
+				fprintf(stderr, "\033[7m> %s%s\033[0m\r\n",
+					is_current ? "* " : "  ",
 					entries[i].label);
 			else if (entries[i].dead)
-				fprintf(stderr, "\033[2m  %s\033[0m\r\n",
+				fprintf(stderr, "\033[2m  %s%s\033[0m\r\n",
+					is_current ? "* " : "  ",
 					entries[i].label);
 			else
-				fprintf(stderr, "  %s\r\n",
+				fprintf(stderr, "  %s%s\r\n",
+					is_current ? "* " : "  ",
 					entries[i].label);
 		}
 
