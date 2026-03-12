@@ -2343,6 +2343,77 @@ else
     ok "picker-execvp: skip (expect not available)"
 fi
 
+# ── 36. picker kill detached: sockname must use persistent buffer ─────────────
+#
+# Regression test: killing a detached session from the picker should make the
+# session disappear from a subsequent `atch list` invocation.
+# The previous code set the global `sockname` to a stack-local char[] inside a
+# block scope; after the block ended, sockname was dangling.
+
+if command -v expect >/dev/null 2>&1; then
+
+    "$ATCH" start pkd-target sleep 999
+    "$ATCH" start pkd-other  sleep 999
+    wait_socket pkd-target
+    wait_socket pkd-other
+
+    # Verify both sessions exist before the picker kill
+    run "$ATCH" list --no-picker
+    assert_contains "picker-kill-detached: target exists before" "pkd-target" "$out"
+    assert_contains "picker-kill-detached: other exists before"  "pkd-other"  "$out"
+
+    # Run the picker, navigate to pkd-target, kill it
+    # readdir order varies; we send Down after k+y in case pkd-other is first.
+    # Strategy: press k then y — whichever is selected first gets killed.
+    # Then we verify that exactly one session was killed.
+    PICKER_OUT=$(mktemp)
+    expect - << 'EXPECT_EOF' > "$PICKER_OUT" 2>&1
+set timeout 10
+spawn sh -c "exec $env(ATCH) list 2>&1"
+sleep 0.5
+send "k"
+sleep 0.5
+send "y"
+sleep 2
+send "\x1b"
+expect eof
+EXPECT_EOF
+
+    # After picker exit, a fresh atch list must show exactly 1 session
+    run "$ATCH" list --no-picker
+    LIVE_COUNT=$(echo "$out" | grep -c "pkd-" || true)
+    if [ "$LIVE_COUNT" -eq 1 ]; then
+        ok "picker-kill-detached: exactly one session remains after kill"
+    else
+        fail "picker-kill-detached: exactly one session remains after kill" \
+             "1 session" "$LIVE_COUNT sessions: $out"
+    fi
+
+    # The killed session must not appear in list
+    # Determine which one was killed from the picker output
+    if grep -q "session 'pkd-target' killed" "$PICKER_OUT"; then
+        KILLED="pkd-target"
+        SURVIVED="pkd-other"
+    elif grep -q "session 'pkd-other' killed" "$PICKER_OUT"; then
+        KILLED="pkd-other"
+        SURVIVED="pkd-target"
+    else
+        KILLED="(unknown)"
+        SURVIVED="(unknown)"
+    fi
+    assert_not_contains "picker-kill-detached: killed session gone from list" \
+                        "$KILLED" "$out"
+
+    rm -f "$PICKER_OUT"
+    tidy pkd-target
+    tidy pkd-other
+
+else
+    ok "picker-kill-detached: skip (expect not available)"
+    ok "picker-kill-detached: skip (expect not available)"
+    ok "picker-kill-detached: skip (expect not available)"
+fi
+
 # ── summary ──────────────────────────────────────────────────────────────────
 
 printf "\n1..%d\n" "$T"

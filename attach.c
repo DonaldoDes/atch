@@ -1201,22 +1201,30 @@ static int interactive_picker(struct session_entry *entries, int count)
 			fprintf(stderr, "\033[?25h");
 			fflush(stderr);
 
-			/* Kill the session */
+			/* Kill the session.
+			** Use a static buffer so that the global sockname
+			** does not become a dangling pointer when this
+			** scope exits — kill_main and the polling helpers
+			** (session_gone_or_dead, session_shortname) all
+			** dereference sockname asynchronously. */
 			{
-				char path[768];
-				snprintf(path, sizeof(path), "%s/%s",
+				static char kill_path[768];
+				snprintf(kill_path, sizeof(kill_path),
+					 "%s/%s",
 					 dir, entries[sel].name);
-				sockname = path;
+				sockname = kill_path;
 				if (entries[sel].dead) {
 					/* Dead session: just clean up files */
-					unlink(path);
+					unlink(kill_path);
 					{
 						char assoc[800];
 						snprintf(assoc, sizeof(assoc),
-							 "%s.log", path);
+							 "%s.log",
+							 kill_path);
 						unlink(assoc);
 						snprintf(assoc, sizeof(assoc),
-							 "%s.ppid", path);
+							 "%s.ppid",
+							 kill_path);
 						unlink(assoc);
 					}
 				} else {
